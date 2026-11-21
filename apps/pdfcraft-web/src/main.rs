@@ -62,7 +62,7 @@ fn main() {
                         {
                             app.comment_prefs.author = author.chars().take(200).collect();
                         }
-                        bridge.listen(app.startup_inbox.clone(), cc.egui_ctx.clone());
+                        bridge.listen(app.startup_inbox.clone(), app.host_saves.clone(), cc.egui_ctx.clone());
                         app.host_save = Some(bridge.save_fn());
                         app.host_dirty = Some(bridge.dirty_fn());
                         bridge.post_ready();
@@ -145,6 +145,10 @@ fn app_canvas() -> Option<web_sys::HtmlCanvasElement> {
 ///   `?file=` URL; a file over [`host::MAX_OPEN_BYTES`] is refused before it is copied.
 /// - `pdfcraft:save` (to the host): `{ name, saveAs, bytes }` when the user saves. The host stores
 ///   the file (and reports its own errors).
+/// - `pdfcraft:host` with `saves: true`: the host stores saves and answers each. `pdfcraft:save` then
+///   carries an `id`, the document counts as saved only on `pdfcraft:saved { id, name? }` (a `name`
+///   is its name from then on: a conflict copy, Save As), and on `pdfcraft:save-failed { id, error }`
+///   it stays unsaved with "Couldn't save to Nextcloud: {error}". Without `saves` nothing changes.
 /// - `pdfcraft:dirty` whenever unsaved work appears or goes away, `pdfcraft:failed` when the app
 ///   couldn't start.
 #[cfg(target_arch = "wasm32")]
@@ -152,6 +156,7 @@ mod host {
     use std::rc::Rc;
 
     use craft_web_host::web::{FileData, Host, Message};
+    use pdfcraft_ui_egui::HostAnswer;
 
     /// The app id in the host messages (`pdfcraft:ready`).
     const APP: &str = "pdfcraft";
@@ -185,18 +190,28 @@ mod host {
             let _ = self.host.post_failed(error, None);
         }
 
-        /// Hear `pdfcraft:open` and queue the file like a `?file=` download.
-        pub fn listen(&self, inbox: pdfcraft_ui_egui::Inbox, ctx: egui::Context) {
-            self.host.listen(move |message| {
-                if let Message::Open { name, data } = message {
-                    queue_open(&name, &data, &inbox, &ctx);
+        /// Hear the host: `open` queues the file like a `?file=` download, `host` says whether it
+        /// stores saves, `saved` and `save-failed` answer a save. `fonts` is not used: PdfCraft
+        /// reads the fonts a PDF embeds and keeps no font list of its own to add to.
+        pub fn listen(&self, inbox: pdfcraft_ui_egui::Inbox, saves: pdfcraft_ui_egui::HostSaves, ctx: egui::Context) {
+            self.host.listen(move |message| match message {
+                Message::Open { name, data } => queue_open(&name, &data, &inbox, &ctx),
+                Message::Host { saves: true, .. } => saves.set_confirms(),
+                Message::Saved { id, name } => {
+                    saves.answer(HostAnswer::Saved { id, name });
+                    ctx.request_repaint();
                 }
+                Message::SaveFailed { id, error } => {
+                    saves.answer(HostAnswer::Failed { id, error });
+                    ctx.request_repaint();
+                }
+                _ => {}
             });
         }
 
         pub fn save_fn(&self) -> pdfcraft_ui_egui::HostSaveFn {
             let host = self.host.clone();
-            Box::new(move |name: &str, bytes: &[u8], save_as: bool| host.post_save(name, bytes, None, save_as))
+            Box::new(move |name: &str, bytes: &[u8], save_as: bool, id: Option<&str>| host.post_save(name, bytes, id, save_as))
         }
 
         pub fn dirty_fn(&self) -> pdfcraft_ui_egui::HostDirtyFn {

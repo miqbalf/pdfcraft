@@ -139,10 +139,17 @@ impl PdfCraftApp {
             // An embedding page that asked for saves (`?host=parent`) gets the bytes; otherwise
             // the browser downloads them.
             let to_host = self.host_save.is_some();
+            // A host that answers each save gets an id; the document counts as saved when it says so.
+            let confirmed = to_host && self.host_saves.confirms();
+            let save_id = confirmed.then(|| self.next_host_save_id());
             let delivered = match &self.host_save {
-                Some(save) => save(&name, &bytes, matches!(target, SaveTarget::As)),
+                Some(save) => save(&name, &bytes, matches!(target, SaveTarget::As), save_id.as_deref()),
                 None => download(&name, &bytes),
             };
+            if let (Ok(()), Some(save_id)) = (&delivered, save_id) {
+                self.hold_for_host(save_id, id, bytes, Box::new(after));
+                return false;
+            }
             match delivered {
                 Ok(()) => {
                     // As the native save does: what was saved isn't asked about again (#2149).

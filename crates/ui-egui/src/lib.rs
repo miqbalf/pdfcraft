@@ -132,7 +132,7 @@ use dialogs::rename_ui;
 use dialogs::standards_ui;
 use dialogs::word_count_ui;
 pub use home::folders_ui;
-pub use hooks::{FailedInbox, HostDirtyFn, HostSaveFn, Inbox, OsEvent, OsEventsFn};
+pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, Inbox, OsEvent, OsEventsFn};
 use menus::tab_context;
 use panels::all_tools_ui;
 use panels::comments_panel;
@@ -578,6 +578,12 @@ pub struct PdfCraftApp {
     pub os_events: Option<OsEventsFn>,
     /// Save delivers to the embedding page instead of downloading (web, see [`HostSaveFn`]).
     pub host_save: Option<HostSaveFn>,
+    /// Whether the host stores saves and answers each, and its answers ([`HostSaves`]).
+    pub host_saves: HostSaves,
+    /// Saves handed to a host that answers each, waiting for its answer (`editing::host_saves`).
+    #[cfg(any(test, target_arch = "wasm32"))]
+    host_save_seq: u64,
+    pending_host_saves: Vec<editing::PendingHostSave>,
     /// Reports unsaved work, or an open OCR review, to the embedding page (web, see [`HostDirtyFn`]).
     pub host_dirty: Option<HostDirtyFn>,
     /// A pending "save changes?" question (closing a dirty tab or quitting).

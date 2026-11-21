@@ -7,6 +7,8 @@ use pdfcraft_platform::staging::{StagingName, staging_suffixes};
 use crate::PdfCraftApp;
 
 mod close;
+mod host_saves;
+pub(crate) use host_saves::PendingHostSave;
 mod save;
 
 pub use close::CloseRequest;

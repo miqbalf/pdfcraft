@@ -205,6 +205,10 @@ impl PdfCraftApp {
             unsaved_flag: Default::default(),
             os_events: None,
             host_save: None,
+            host_saves: Default::default(),
+            #[cfg(any(test, target_arch = "wasm32"))]
+            host_save_seq: 0,
+            pending_host_saves: Vec::new(),
             host_dirty: None,
             close_request: None,
             save_prompt_button: Default::default(),
@@ -742,6 +746,7 @@ impl PdfCraftApp {
         // Reload documents whose files a build rewrote (#431).
         #[cfg(not(target_arch = "wasm32"))]
         self.watch_files();
+        self.poll_host_saves();
         if self.host_dirty.is_some() {
             // An OCR review not yet accepted or rejected is work the page would lose, too.
             let dirty = self.work_at_risk();
