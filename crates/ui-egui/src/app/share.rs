@@ -30,12 +30,10 @@ impl PdfCraftApp {
         ShareRoute::None
     }
 
-    /// A document named `name` was just added as `id`: when it is a file the host handed over, it
-    /// becomes the host's document. Only one document is: while the first is open, a later host
-    /// file opens without Share, and the user is told.
-    pub(crate) fn host_opened(&mut self, name: &str, id: DocId) {
-        let Some(at) = self.host_opening.iter().position(|n| n == name) else { return };
-        self.host_opening.remove(at);
+    /// The file the host handed over was just added as `id` (the open carried the host's tag
+    /// from the startup inbox through any password prompt): it is the host's document. Only one
+    /// is: while the first is open, a later host file opens without Share, and the user is told.
+    pub(crate) fn host_opened(&mut self, id: DocId) {
         let first_open = self.host_doc.filter(|doc| self.views.iter().any(|v| v.id == *doc));
         match first_open {
             Some(first) if first != id => {
@@ -43,17 +41,6 @@ impl PdfCraftApp {
                 self.notify_fmt("Share works only for {name}, the first file opened from Nextcloud", &[("name", &first)]);
             }
             _ => self.host_doc = Some(id),
-        }
-    }
-
-    /// The host's file named `name` was handed to the opener. Unless it waits for its password,
-    /// it is either a document now or was refused: either way no later document takes its place.
-    pub(crate) fn host_open_settled(&mut self, name: &str) {
-        if self.password_prompt.as_ref().is_some_and(|p| p.name == name) {
-            return;
-        }
-        if let Some(at) = self.host_opening.iter().position(|n| n == name) {
-            self.host_opening.remove(at);
         }
     }
 

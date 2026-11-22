@@ -151,6 +151,7 @@ impl PdfCraftApp {
             recovered: request.recovered,
             then: request.then,
             display_override: None,
+            host: false,
             ready: None,
         });
         Ok(token)
@@ -266,7 +267,7 @@ impl PdfCraftApp {
                 Err(error) => self.notify_fmt("Couldn't open {name}: {e}", &[("name", &pending.name), ("e", &error)]),
             },
             open_worker::ResultKind::Prepared { bytes, result } => match *result {
-                Ok(prepared) => match self.finish_open(&pending.name, pending.path.clone(), bytes.len(), prepared, pending.activate) {
+                Ok(prepared) => match self.finish_open(&pending.name, pending.path.clone(), bytes.len(), prepared, pending.activate, pending.host) {
                     Ok(id) => {
                         if pending.path.is_some() {
                             self.watch.known_as(id, pending.stamp);
@@ -304,6 +305,7 @@ impl PdfCraftApp {
                         then: pending.then,
                         after_open: pending.after_open,
                         display_override: pending.display_override,
+                        host: pending.host,
                     });
                 }
                 Err(error) => self.notify_fmt("Couldn't open {name}: {e}", &[("name", &pending.name), ("e", &error.to_string())]),
@@ -344,12 +346,13 @@ impl PdfCraftApp {
                     then: None,
                     after_open: None,
                     display_override: None,
+                    host: self.opening_from_host,
                 });
                 return Ok(());
             }
             Err(e) => return Err(e.to_string()),
         };
-        self.finish_open(name, path, bytes.len(), prepared, activate).map(|_| ())
+        self.finish_open(name, path, bytes.len(), prepared, activate, self.opening_from_host).map(|_| ())
     }
 
     /// Add a prepared document as a tab: its view, the panels it opens with, a portfolio's file list
@@ -362,10 +365,13 @@ impl PdfCraftApp {
         size: usize,
         prepared: pdfcraft_engine::PreparedDocument,
         activate: bool,
+        from_host: bool,
     ) -> Result<DocId, String> {
         let id = self.session.commit_open(prepared);
         self.password_prompt = None;
-        self.host_opened(name, id);
+        if from_host {
+            self.host_opened(id);
+        }
         // A tab opening in front leaves a portfolio's tab, whose file list gives the panel back:
         // the document a portfolio presents opens with the panels any other would.
         if activate {
@@ -698,6 +704,7 @@ impl PdfCraftApp {
                 && let Some(pending) = self.pending_opens.iter_mut().find(|pending| pending.token == *token)
             {
                 pending.display_override = p.display_override;
+                pending.host = p.host;
                 // Replies behind it that ask for a password wait for its outcome
                 // (`poll_pending_opens`).
                 self.password_retry = Some(*token);
@@ -712,7 +719,9 @@ impl PdfCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let (path_for_watch, stamp_for_watch) = (p.path.clone(), p.stamp);
         let after_open = p.after_open.clone();
+        self.opening_from_host = p.host;
         let opened = self.try_open(&p.name, p.path.take(), p.bytes.clone(), Some(&pw), p.activate);
+        self.opening_from_host = false;
         drop(pw);
         match opened {
             Err(e) => self.notify_fmt("Couldn't open {name}: {e}", &[("name", &p.name), ("e", &e.to_string())]),

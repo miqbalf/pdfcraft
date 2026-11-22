@@ -377,6 +377,9 @@ pub struct PasswordPrompt {
     pub(crate) after_open: Option<pdfcraft_render::RemoteDestination>,
     /// A launch-time display override, applied only after this PDF is unlocked.
     pub(crate) display_override: Option<(canvas::PageLayout, bool)>,
+    /// A file the hosting page handed over: unlocked, it is the host's document
+    /// ([`crate::PdfCraftApp::host_doc`]); cancelled, nothing of it remains.
+    pub(crate) host: bool,
 }
 
 impl Drop for PasswordPrompt {

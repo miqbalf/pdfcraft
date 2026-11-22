@@ -768,6 +768,7 @@ fn launch_layout_waits_for_cli_opens_and_preserves_restored_tabs() {
                         recovered: None,
                         then: None,
                         display_override: Some((PageLayout::TwoUp, false)),
+                        host: false,
                         ready: None,
                     });
                     replies.push((
@@ -826,6 +827,7 @@ fn launch_layout_failed_or_cancelled_opens_do_not_target_existing_documents() {
             recovered: None,
             then: None,
             display_override: Some((PageLayout::TwoUp, false)),
+            host: false,
             ready: None,
         });
         app.set_launch_layout("single").unwrap();

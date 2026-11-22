@@ -214,7 +214,7 @@ impl PdfCraftApp {
             host_share: None,
             host_shares: Default::default(),
             host_doc: None,
-            host_opening: Vec::new(),
+            opening_from_host: false,
             #[cfg(not(target_arch = "wasm32"))]
             share_lookup: |_| craft_share::ShareRoute::None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -704,15 +704,11 @@ impl PdfCraftApp {
             for (name, bytes) in startup {
                 let activate = !self.startup_superseded;
                 // A file the host handed over: the document it becomes is the one Share can share.
-                let from_host = self.host_shares.take_queued(&name);
-                if from_host {
-                    self.host_opening.push(name.clone());
-                }
-                if let Err(e) = self.open_bytes_with_focus(&name, None, bytes, activate) {
+                self.opening_from_host = self.host_shares.take_queued(&name);
+                let opened = self.open_bytes_with_focus(&name, None, bytes, activate);
+                self.opening_from_host = false;
+                if let Err(e) = opened {
                     self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &e)]);
-                }
-                if from_host {
-                    self.host_open_settled(&name);
                 }
             }
         }

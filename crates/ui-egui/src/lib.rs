@@ -281,6 +281,8 @@ struct PendingOpen {
     recovered: Option<RecoveryMeta>,
     then: Option<&'static str>,
     display_override: Option<(canvas::PageLayout, bool)>,
+    /// A file the hosting page handed over (see [`PdfCraftApp::host_doc`]).
+    host: bool,
     /// A reply taken from `receiver` and kept back for later (a password prompt waiting for an
     /// earlier file's password retry).
     ready: Option<open_worker::ResultKind>,
@@ -595,9 +597,9 @@ pub struct PdfCraftApp {
     /// The document the host opened in the frame: the one file it can share. Kept by id, so a
     /// host save under another name keeps it, and another document of the same name is not it.
     pub host_doc: Option<DocId>,
-    /// Names of host files taken from the startup inbox whose document is not added yet (a
-    /// password prompt): the document opened under that name becomes [`Self::host_doc`].
-    host_opening: Vec<String>,
+    /// Set while a file the host handed over is being opened from the startup inbox: the open
+    /// carries it as a tag (its password prompt, its pending open) to the document it adds.
+    opening_from_host: bool,
     /// Finds the Nextcloud account and remote path of a file in a folder the Nextcloud desktop
     /// client syncs. The desktop app sets [`craft_share::desktop_route`]; until then (tests, the
     /// web) no file is in a synced folder, so nothing reads the machine's Nextcloud config.

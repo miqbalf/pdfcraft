@@ -81,8 +81,21 @@ impl Probe {
 
 /// The host's `open`: the web shell queues the bytes in the startup inbox and tells the app the name.
 fn host_open(app: &mut PdfCraftApp, name: &str) {
+    host_open_bytes(app, name, fixture());
+}
+
+fn host_open_bytes(app: &mut PdfCraftApp, name: &str, bytes: Vec<u8>) {
     app.host_shares.queued(name);
-    app.startup_inbox.lock().unwrap().push((name.to_string(), fixture()));
+    app.startup_inbox.lock().unwrap().push((name.to_string(), bytes));
+}
+
+/// [`fixture`] with an open password.
+fn locked(password: &str) -> Vec<u8> {
+    use pdfcraft_engine::{Edit, Protection, Session};
+    let mut session = Session::new();
+    let id = session.open("locked.pdf", None, Arc::new(fixture()), None).unwrap();
+    session.apply(id, Edit::Protect(Protection { open_password: Some(password.into()), ..Default::default() })).unwrap();
+    session.save_bytes(id).unwrap().as_ref().clone()
 }
 
 fn harness(setup: impl FnOnce(&mut PdfCraftApp) + 'static) -> (Harness<'static, PdfCraftApp>, ControlClient) {
@@ -364,4 +377,59 @@ fn the_desktop_lookup_runs_on_open_and_switch_not_every_frame() {
     let expected = craft_share::sharing_url("https://cloud.example.test", "/a.pdf");
     share_via(&mut h, &c, "control");
     assert_eq!(h.state().last_opened_url.as_deref(), Some(expected.as_str()));
+}
+
+/// A host file that asked for its password and was cancelled leaves nothing behind: a local file
+/// of the same name opened later is not the host's.
+#[test]
+fn a_cancelled_host_password_leaves_no_host_file() {
+    let probe = Probe::default();
+    let p = probe.clone();
+    let (mut h, c) = harness(move |app| {
+        p.connect(app, true);
+        host_open_bytes(app, "report.pdf", locked("pw"));
+    });
+    crate::support::wait_until(&mut h, "the host file's password prompt", |app| app.password_prompt.is_some());
+    h.state_mut().submit_password(None);
+    h.run_steps(2);
+    assert!(h.state().views.is_empty(), "nothing opened");
+    h.state_mut().open_bytes("report.pdf", None, fixture()).unwrap();
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 0, "the local file is not shared as the host's");
+    assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
+}
+
+/// A host file that could not be opened leaves nothing behind either.
+#[test]
+fn a_failed_host_open_leaves_no_host_file() {
+    let probe = Probe::default();
+    let p = probe.clone();
+    let (mut h, c) = harness(move |app| {
+        p.connect(app, true);
+        host_open_bytes(app, "report.pdf", b"not a pdf".to_vec());
+    });
+    h.run_steps(2);
+    assert!(h.state().views.is_empty(), "nothing opened");
+    h.state_mut().open_bytes("report.pdf", None, fixture()).unwrap();
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 0, "the local file is not shared as the host's");
+    assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
+}
+
+/// A host file opened with its password is the host's document.
+#[test]
+fn a_host_file_opened_with_its_password_shares() {
+    let probe = Probe::default();
+    let p = probe.clone();
+    let (mut h, c) = harness(move |app| {
+        p.connect(app, true);
+        host_open_bytes(app, "report.pdf", locked("pw"));
+    });
+    crate::support::wait_until(&mut h, "the host file's password prompt", |app| app.password_prompt.is_some());
+    h.state_mut().submit_password(Some("pw".into()));
+    crate::support::wait_until(&mut h, "the host file", |app| app.views.len() == 1 && app.password_prompt.is_none());
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 1);
 }
