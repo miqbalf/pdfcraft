@@ -117,6 +117,8 @@ use canvas::signature_drag;
 use canvas::wheel_boost;
 use canvas::wheel_pager;
 use canvas::zoom_snap;
+/// Share's routes (`craft-share`), for the desktop app's [`PdfCraftApp::share_lookup`].
+pub use craft_share;
 use dialogs::appearance;
 pub use dialogs::bookmark_styles_ui;
 use dialogs::comment_props;
@@ -132,8 +134,6 @@ use dialogs::rename_ui;
 use dialogs::standards_ui;
 use dialogs::word_count_ui;
 pub use home::folders_ui;
-/// Share's routes (`craft-share`), for the desktop app's [`PdfCraftApp::share_lookup`].
-pub use craft_share;
 pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, HostShareFn, HostShares, Inbox, OsEvent, OsEventsFn};
 use menus::tab_context;
 use panels::all_tools_ui;
