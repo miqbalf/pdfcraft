@@ -708,9 +708,9 @@ fn tab(ui: &mut egui::Ui, spec: TabSpec<'_>, close: &mut Option<usize>) -> egui:
     theme::hand(resp).on_hover_text(if dirty { crate::i18n::fmt(tl!("{name} — unsaved changes"), &[("name", &shown)]) } else { shown })
 }
 
-/// Width the print, save and info buttons and their gaps take in the mode bar: three buttons, the
-/// 4 pt `item_spacing` after each of them (three gaps, not two), and the 8 pt spacer.
-const MODE_BAR_RIGHT: f32 = 3.0 * 32.0 + 3.0 * 4.0 + 8.0;
+/// Width the share, print, save and info buttons and their gaps take in the mode bar: four buttons,
+/// the 4 pt `item_spacing` after each of them (four gaps, not three), and the 8 pt spacer.
+const MODE_BAR_RIGHT: f32 = 4.0 * 32.0 + 4.0 * 4.0 + 8.0;
 /// Narrowest search field the mode bar shows; below it the field becomes an icon button.
 const MODE_BAR_SEARCH_MIN: f32 = 140.0;
 
@@ -737,7 +737,7 @@ pub fn mode_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 // Acrobat's mode bar has no Read tab: reading is what the viewer does with no tool
                 // in use. Read mode (the panes hidden) stays a View command and a default workspace.
                 let modes = [(Mode::AllTools, "All tools"), (Mode::Edit, "Edit"), (Mode::Convert, "Convert"), (Mode::Sign, "E-Sign")];
-                // What the right side needs (three 32 px buttons, gaps) and the least search box worth showing.
+                // What the right side needs (four 32 px buttons, gaps) and the least search box worth showing.
                 let avail = ui.available_width();
                 let tabs_w: f32 = modes.iter().map(|(_, l)| widgets::mode_tab_width(ui, tl!(*l))).sum::<f32>() + 2.0 * (modes.len() as f32 - 1.0);
                 let inline_tabs = avail >= tabs_w + MODE_BAR_RIGHT + MODE_BAR_SEARCH_MIN;
@@ -768,6 +768,11 @@ pub fn mode_bar(app: &mut PdfCraftApp, ui: &mut egui::Ui) {
                 let left = ui.available_width();
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
+                    // Share, at the right end as in the other Craft apps: Nextcloud's sharing for
+                    // the open file, or a note that no Nextcloud is connected, so never disabled.
+                    if icons::button(ui, "share-2", 32.0, false, tl!("Share")).clicked() {
+                        app.run_command("file.share");
+                    }
                     let has_doc = app.active.is_some();
                     ui.add_enabled_ui(has_doc, |ui| {
                         let tip = crate::commands::command_tip(ui.ctx(), tl!("Print ({key})"), "print.dialog");

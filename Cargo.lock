@@ -1693,6 +1693,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-share"
+version = "0.1.0"
+source = "git+https://github.com/miqbalf/craft-libs?rev=0434267cbc03705d1a4a22986bfc533ae92b812b#0434267cbc03705d1a4a22986bfc533ae92b812b"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "craft-stream-codecs"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=9eb02be84f21898e247daeb2af5827c9fe85a3a0#9eb02be84f21898e247daeb2af5827c9fe85a3a0"
@@ -1783,7 +1791,7 @@ dependencies = [
 [[package]]
 name = "craft-web-host"
 version = "0.1.0"
-source = "git+https://github.com/miqbalf/craft-libs?rev=71e6ef899f551665f690970d57a204afb433c5dd#71e6ef899f551665f690970d57a204afb433c5dd"
+source = "git+https://github.com/miqbalf/craft-libs?rev=0434267cbc03705d1a4a22986bfc533ae92b812b#0434267cbc03705d1a4a22986bfc533ae92b812b"
 dependencies = [
  "serde_json",
  "wasm-bindgen",
@@ -5445,6 +5453,7 @@ dependencies = [
  "craft-keymap",
  "craft-menu",
  "craft-quit",
+ "craft-share",
  "craft-ui",
  "craft-update",
  "edit-session",

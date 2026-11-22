@@ -202,6 +202,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     c("file.close", "Close file", FILE, Some(Shortcut::cmd("W")), Document, "x"),
     c("file.close_all", "Close all", FILE, Some(Shortcut::cmd_shift("W")), Document, "x"),
     c("file.revert", "Revert", FILE, None, Undo, "rotate-ccw"),
+    // Nextcloud's own sharing for the open file (the hosting Nextcloud page, or the file's
+    // Nextcloud in the browser); anywhere else the UI says no Nextcloud is connected.
+    c("file.share", "Share", FILE, None, Nothing, "share-2"),
     c("print.dialog", "Print…", FILE, Some(Shortcut::cmd("P")), Printing, "printer"),
     c("file.properties", "Document properties…", FILE, Some(Shortcut::cmd("D")), Document, "info"),
     c("file.word_count", "Word count…", FILE, None, Copying, "hash"),

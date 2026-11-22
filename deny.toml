@@ -37,6 +37,9 @@ unknown-git = "deny"
 # storytold's winprint fork (Windows printing, #1107) to an immutable revision of its own.
 allow-git = [
     "https://github.com/storytold/craft-libs",
+    # craft-share and craft-web-host (the Nextcloud host contract) live on the owner's fork until
+    # merged upstream; pinned by immutable rev.
+    "https://github.com/miqbalf/craft-libs",
     "https://github.com/storytold/winprint.rs",
     # The reviewed egui 0.37 and winit 0.30.13 fork revisions (immutable pins in Cargo.toml).
     "https://github.com/storytold/egui",

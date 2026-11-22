@@ -62,8 +62,9 @@ fn main() {
                         {
                             app.comment_prefs.author = author.chars().take(200).collect();
                         }
-                        bridge.listen(app.startup_inbox.clone(), app.host_saves.clone(), cc.egui_ctx.clone());
+                        bridge.listen(app.startup_inbox.clone(), app.host_saves.clone(), app.host_shares.clone(), cc.egui_ctx.clone());
                         app.host_save = Some(bridge.save_fn());
+                        app.host_share = Some(bridge.share_fn());
                         app.host_dirty = Some(bridge.dirty_fn());
                         bridge.post_ready();
                     } else if query_param("host").as_deref() == Some("parent") {
@@ -149,6 +150,11 @@ fn app_canvas() -> Option<web_sys::HtmlCanvasElement> {
 ///   carries an `id`, the document counts as saved only on `pdfcraft:saved { id, name? }` (a `name`
 ///   is its name from then on: a conflict copy, Save As), and on `pdfcraft:save-failed { id, error }`
 ///   it stays unsaved with "Couldn't save to Nextcloud: {error}". Without `saves` nothing changes.
+/// - `pdfcraft:host` with `share: true`: the host shares files itself (Nextcloud). Share
+///   (`file.share`) then sends `pdfcraft:share {}` while the file the host opened is shown, and the
+///   host opens Nextcloud's sharing for it; `pdfcraft:ready` says `shareButton: true` (PdfCraft has
+///   its own Share button). Without `share`, or for another document, Share says
+///   "No Nextcloud connected".
 /// - `pdfcraft:dirty` whenever unsaved work appears or goes away, `pdfcraft:failed` when the app
 ///   couldn't start.
 #[cfg(target_arch = "wasm32")]
@@ -182,7 +188,8 @@ mod host {
         }
 
         pub fn post_ready(&self) {
-            let _ = self.host.post_ready(env!("CARGO_PKG_VERSION"), false);
+            // `shareButton`: PdfCraft has its own Share button, so the host shows none.
+            let _ = self.host.post_ready_with(env!("CARGO_PKG_VERSION"), false, true);
         }
 
         /// The app couldn't start (no WebGL, for example): let the host say so.
@@ -190,13 +197,31 @@ mod host {
             let _ = self.host.post_failed(error, None);
         }
 
-        /// Hear the host: `open` queues the file like a `?file=` download, `host` says whether it
-        /// stores saves, `saved` and `save-failed` answer a save. `fonts` is not used: PdfCraft
-        /// reads the fonts a PDF embeds and keeps no font list of its own to add to.
-        pub fn listen(&self, inbox: pdfcraft_ui_egui::Inbox, saves: pdfcraft_ui_egui::HostSaves, ctx: egui::Context) {
+        /// Hear the host: `open` queues the file like a `?file=` download (and is the one file the
+        /// host can share), `host` says whether it stores saves and whether it shares files,
+        /// `saved` and `save-failed` answer a save. `fonts` is not used: PdfCraft reads the fonts a
+        /// PDF embeds and keeps no font list of its own to add to.
+        pub fn listen(
+            &self,
+            inbox: pdfcraft_ui_egui::Inbox,
+            saves: pdfcraft_ui_egui::HostSaves,
+            shares: pdfcraft_ui_egui::HostShares,
+            ctx: egui::Context,
+        ) {
             self.host.listen(move |message| match message {
-                Message::Open { name, data } => queue_open(&name, &data, &inbox, &ctx),
-                Message::Host { saves: true, .. } => saves.set_confirms(),
+                Message::Open { name, data } => {
+                    if let Some(name) = queue_open(&name, &data, &inbox, &ctx) {
+                        shares.set_opened(&name);
+                    }
+                }
+                Message::Host { saves: confirms, share, .. } => {
+                    if confirms {
+                        saves.set_confirms();
+                    }
+                    if share {
+                        shares.set_offered();
+                    }
+                }
                 Message::Saved { id, name } => {
                     saves.answer(HostAnswer::Saved { id, name });
                     ctx.request_repaint();
@@ -214,6 +239,12 @@ mod host {
             Box::new(move |name: &str, bytes: &[u8], save_as: bool, id: Option<&str>| host.post_save(name, bytes, id, save_as))
         }
 
+        /// Share asks the host to share the file it opened (`pdfcraft:share`).
+        pub fn share_fn(&self) -> pdfcraft_ui_egui::HostShareFn {
+            let host = self.host.clone();
+            Box::new(move || host.post_share())
+        }
+
         pub fn dirty_fn(&self) -> pdfcraft_ui_egui::HostDirtyFn {
             let host = self.host.clone();
             // A host starts out clean: the first report is a change only when it is dirty.
@@ -229,24 +260,26 @@ mod host {
 
     /// The `pdfcraft:open` payload, `{ name, bytes }` where `bytes` holds a PDF: queue it like a
     /// `?file=` download and wake the app. The crate has cleaned the name (and cut it to 255
-    /// characters); a blank one comes as `document` and becomes `document.pdf`.
-    fn queue_open(name: &str, data: &FileData, inbox: &pdfcraft_ui_egui::Inbox, ctx: &egui::Context) {
+    /// characters); a blank one comes as `document` and becomes `document.pdf`. Returns the name
+    /// it opens under, or `None` when it was refused.
+    fn queue_open(name: &str, data: &FileData, inbox: &pdfcraft_ui_egui::Inbox, ctx: &egui::Context) -> Option<String> {
         let name = if name == "document" { DEFAULT_NAME } else { name }.to_string();
         let FileData::Bytes(view) = data else {
             eframe::web_sys::console::warn_1(&format!("PdfCraft: host file {name} came as a File; PdfCraft reads bytes only; not opened").into());
-            return;
+            return None;
         };
         // A file from the host is untrusted input: refuse an oversized one before copying it into the app's memory.
         if data.size() > MAX_OPEN_BYTES as f64 {
             eframe::web_sys::console::warn_1(
                 &format!("PdfCraft: host file is {} bytes, over the {} MiB host open limit; not opened", data.size(), MAX_OPEN_BYTES >> 20).into(),
             );
-            return;
+            return None;
         }
         if let Ok(mut q) = inbox.lock() {
-            q.push((name, view.to_vec()));
+            q.push((name.clone(), view.to_vec()));
         }
         ctx.request_repaint();
+        Some(name)
     }
 }
 

@@ -118,6 +118,8 @@ const FILE: &[&str] = &[
     "file.save_as",
     "file.revert",
     SEP,
+    "file.share",
+    SEP,
     "file.close",
     "file.close_all",
     SEP,

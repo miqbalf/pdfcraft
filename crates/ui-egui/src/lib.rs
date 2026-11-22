@@ -132,7 +132,7 @@ use dialogs::rename_ui;
 use dialogs::standards_ui;
 use dialogs::word_count_ui;
 pub use home::folders_ui;
-pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, Inbox, OsEvent, OsEventsFn};
+pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, HostShareFn, HostShares, Inbox, OsEvent, OsEventsFn};
 use menus::tab_context;
 use panels::all_tools_ui;
 use panels::comments_panel;
@@ -586,6 +586,18 @@ pub struct PdfCraftApp {
     pending_host_saves: Vec<editing::PendingHostSave>,
     /// Reports unsaved work, or an open OCR review, to the embedding page (web, see [`HostDirtyFn`]).
     pub host_dirty: Option<HostDirtyFn>,
+    /// Share asks the embedding page to share the file it opened (web, see [`HostShareFn`]).
+    pub host_share: Option<HostShareFn>,
+    /// Whether the host shares files itself, and which file it opened ([`HostShares`]).
+    pub host_shares: HostShares,
+    /// Finds the Nextcloud account and remote path of a file in a folder the Nextcloud desktop
+    /// client syncs (desktop; tests put a fake config lookup here).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub share_lookup: fn(&std::path::Path) -> craft_share::ShareRoute,
+    /// [`Self::share_lookup`]'s answer per document, for the path it was asked about: asked again
+    /// only when a document is opened, saved under another path or switched to, never every frame.
+    #[cfg(not(target_arch = "wasm32"))]
+    desktop_shares: std::collections::HashMap<DocId, (String, craft_share::ShareRoute)>,
     /// A pending "save changes?" question (closing a dirty tab or quitting).
     pub close_request: Option<CloseRequest>,
     /// The button of the "save changes?" question the keyboard has chosen; Save when it opens.

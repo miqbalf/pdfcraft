@@ -17,6 +17,8 @@ craft-menu = { workspace = true }
 craft-keymap = { workspace = true }
 # Interface translations over the embedded craft-i18n catalogs (`build.rs`, `src/i18n.rs`).
 craft-i18n = { workspace = true }
+# Share: where it goes and the "No Nextcloud connected" text (`app/share.rs`).
+craft-share = { workspace = true }
 # Quit from the menus asks the window to close, so the unsaved-changes check runs; on macOS a window
 # close also quits through `terminate:` (the Touch Bar crash, #1136).
 craft-quit = { workspace = true, features = ["egui"] }

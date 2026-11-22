@@ -16,6 +16,7 @@ mod input;
 mod keys;
 mod links;
 mod prefs;
+mod share;
 mod window;
 
 pub(crate) use clipboard::{ObjectClipMark, copy_refused, print_refused};
@@ -210,6 +211,12 @@ impl PdfCraftApp {
             host_save_seq: 0,
             pending_host_saves: Vec::new(),
             host_dirty: None,
+            host_share: None,
+            host_shares: Default::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            share_lookup: craft_share::desktop_route,
+            #[cfg(not(target_arch = "wasm32"))]
+            desktop_shares: Default::default(),
             close_request: None,
             save_prompt_button: Default::default(),
             save_prompt_seen: false,
@@ -622,6 +629,8 @@ impl PdfCraftApp {
             self.poll_pending_destinations();
         }
         self.check_restored_recent();
+        #[cfg(not(target_arch = "wasm32"))]
+        self.refresh_share_route();
         // Chinese wants its own faces before the Japanese ones (one baseline per line).
         let cjk = theme::CjkPreference::for_language(lang.code());
         if !self.styled {

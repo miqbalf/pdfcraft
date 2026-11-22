@@ -75,3 +75,40 @@ impl HostSaves {
 /// Told every frame whether any tab has unsaved work, or an OCR review is not yet accepted or
 /// rejected, so a host page can warn before leaving.
 pub type HostDirtyFn = Box<dyn FnMut(bool)>;
+
+/// Asks the page embedding PdfCraft to share the file it opened (web, `pdfcraft:share`): the page
+/// opens Nextcloud's own sharing for it. Set by the web app when a host page is connected.
+pub type HostShareFn = Box<dyn Fn() -> Result<(), String>>;
+
+#[derive(Default)]
+struct HostSharesState {
+    offered: bool,
+    opened: Option<String>,
+}
+
+/// What the host page tells the app about sharing, shared between the web shell's listener and the
+/// app (a cheap clone): whether it shares files itself (the host's `share`), and the name of the
+/// file it opened in the frame, the one file it can share.
+#[derive(Clone, Default)]
+pub struct HostShares(std::sync::Arc<std::sync::Mutex<HostSharesState>>);
+
+impl HostShares {
+    fn with<R>(&self, f: impl FnOnce(&mut HostSharesState) -> R) -> R {
+        f(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// The host said it shares files itself (Nextcloud).
+    pub fn set_offered(&self) {
+        self.with(|s| s.offered = true);
+    }
+
+    /// The host opened the file named `name` in the frame.
+    pub fn set_opened(&self, name: &str) {
+        self.with(|s| s.opened = Some(name.to_string()));
+    }
+
+    /// The host shares files and `name` is the file it opened.
+    pub fn shares(&self, name: &str) -> bool {
+        self.with(|s| s.offered && s.opened.as_deref() == Some(name))
+    }
+}

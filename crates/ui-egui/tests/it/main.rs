@@ -85,6 +85,7 @@ mod scan_clean;
 mod script_noop;
 mod scroll_prefetch;
 mod search_position;
+mod share;
 mod side_panels;
 mod signing;
 mod snapshot_tabs;
