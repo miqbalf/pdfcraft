@@ -83,12 +83,12 @@ pub type HostShareFn = Box<dyn Fn() -> Result<(), String>>;
 #[derive(Default)]
 struct HostSharesState {
     offered: bool,
-    opened: Option<String>,
+    queued: Vec<String>,
 }
 
 /// What the host page tells the app about sharing, shared between the web shell's listener and the
-/// app (a cheap clone): whether it shares files itself (the host's `share`), and the name of the
-/// file it opened in the frame, the one file it can share.
+/// app (a cheap clone): whether it shares files itself (the host's `share`), and the names of the
+/// files it handed over to open, which the app ties to the documents they become.
 #[derive(Clone, Default)]
 pub struct HostShares(std::sync::Arc<std::sync::Mutex<HostSharesState>>);
 
@@ -97,18 +97,28 @@ impl HostShares {
         f(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
     }
 
-    /// The host said it shares files itself (Nextcloud).
-    pub fn set_offered(&self) {
-        self.with(|s| s.offered = true);
+    /// The host said whether it shares files itself (Nextcloud): its latest `share`.
+    pub fn set_offered(&self, offered: bool) {
+        self.with(|s| s.offered = offered);
     }
 
-    /// The host opened the file named `name` in the frame.
-    pub fn set_opened(&self, name: &str) {
-        self.with(|s| s.opened = Some(name.to_string()));
+    pub fn offered(&self) -> bool {
+        self.with(|s| s.offered)
     }
 
-    /// The host shares files and `name` is the file it opened.
-    pub fn shares(&self, name: &str) -> bool {
-        self.with(|s| s.offered && s.opened.as_deref() == Some(name))
+    /// The host queued the file named `name` to open in the frame.
+    pub fn queued(&self, name: &str) {
+        self.with(|s| s.queued.push(name.to_string()));
+    }
+
+    /// Whether `name` is a file the host queued; it is no longer queued afterwards.
+    pub(crate) fn take_queued(&self, name: &str) -> bool {
+        self.with(|s| match s.queued.iter().position(|q| q == name) {
+            Some(at) => {
+                s.queued.remove(at);
+                true
+            }
+            None => false,
+        })
     }
 }

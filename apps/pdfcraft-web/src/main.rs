@@ -211,16 +211,14 @@ mod host {
             self.host.listen(move |message| match message {
                 Message::Open { name, data } => {
                     if let Some(name) = queue_open(&name, &data, &inbox, &ctx) {
-                        shares.set_opened(&name);
+                        shares.queued(&name);
                     }
                 }
                 Message::Host { saves: confirms, share, .. } => {
                     if confirms {
                         saves.set_confirms();
                     }
-                    if share {
-                        shares.set_offered();
-                    }
+                    shares.set_offered(share);
                 }
                 Message::Saved { id, name } => {
                     saves.answer(HostAnswer::Saved { id, name });

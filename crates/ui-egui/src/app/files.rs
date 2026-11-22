@@ -365,6 +365,7 @@ impl PdfCraftApp {
     ) -> Result<DocId, String> {
         let id = self.session.commit_open(prepared);
         self.password_prompt = None;
+        self.host_opened(name, id);
         // A tab opening in front leaves a portfolio's tab, whose file list gives the panel back:
         // the document a portfolio presents opens with the panels any other would.
         if activate {

@@ -57,8 +57,8 @@ struct Probe {
 }
 
 impl Probe {
-    /// The web shell's wiring for a Nextcloud page that shares files and opened `opened`.
-    fn host(&self, app: &mut PdfCraftApp, opened: &str) {
+    /// The web shell's wiring for a Nextcloud page that shares files.
+    fn connect(&self, app: &mut PdfCraftApp, share: bool) {
         let shares = self.host_shares.clone();
         app.host_share = Some(Box::new(move || {
             shares.set(shares.get() + 1);
@@ -69,9 +69,20 @@ impl Probe {
             saves.set(saves.get() + 1);
             Ok(())
         }));
-        app.host_shares.set_offered();
-        app.host_shares.set_opened(opened);
+        app.host_shares.set_offered(share);
     }
+
+    /// A page that shares files, and the host's `open` of `name` (queued as the web shell does).
+    fn host(&self, app: &mut PdfCraftApp, name: &str) {
+        self.connect(app, true);
+        host_open(app, name);
+    }
+}
+
+/// The host's `open`: the web shell queues the bytes in the startup inbox and tells the app the name.
+fn host_open(app: &mut PdfCraftApp, name: &str) {
+    app.host_shares.queued(name);
+    app.startup_inbox.lock().unwrap().push((name.to_string(), fixture()));
 }
 
 fn harness(setup: impl FnOnce(&mut PdfCraftApp) + 'static) -> (Harness<'static, PdfCraftApp>, ControlClient) {
@@ -135,10 +146,8 @@ fn every_entry_point_asks_the_hosting_page_to_share() {
     for how in entry_points() {
         let probe = Probe::default();
         let p = probe.clone();
-        let (mut h, c) = harness(move |app| {
-            p.host(app, "report.pdf");
-            app.open_bytes("report.pdf", None, fixture()).unwrap();
-        });
+        let (mut h, c) = harness(move |app| p.host(app, "report.pdf"));
+        assert_eq!(h.state().views.len(), 1, "the host's file opened");
         share_via(&mut h, &c, how);
         assert_eq!(probe.host_shares.get(), 1, "{how}: the page is asked to share once");
         assert_eq!(probe.host_saves.get(), 0, "{how}: nothing is saved or exported");
@@ -203,11 +212,9 @@ fn with_no_document_share_says_no_nextcloud() {
 fn the_hosting_page_shares_only_the_file_it_opened() {
     let probe = Probe::default();
     let p = probe.clone();
-    let (mut h, c) = harness(move |app| {
-        p.host(app, "report.pdf");
-        app.open_bytes("report.pdf", None, fixture()).unwrap();
-        app.open_bytes("other.pdf", None, fixture()).unwrap();
-    });
+    let (mut h, c) = harness(move |app| p.host(app, "report.pdf"));
+    h.state_mut().open_bytes("other.pdf", None, fixture()).unwrap();
+    h.run_steps(2);
     share_via(&mut h, &c, "control");
     assert_eq!(probe.host_shares.get(), 0, "the page is not asked to share another file");
     assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
@@ -218,23 +225,114 @@ fn the_hosting_page_shares_only_the_file_it_opened() {
     assert_eq!(probe.host_shares.get(), 1);
 }
 
-/// A page that does not share files (it never said `share: true`) gets no share request.
+/// A local file with the same name as the host's is still another document.
 #[test]
-fn a_page_that_does_not_share_gets_nothing() {
+fn a_local_file_of_the_same_name_is_not_the_hosts() {
     let probe = Probe::default();
     let p = probe.clone();
-    let (mut h, c) = harness(move |app| {
-        let shares = p.host_shares.clone();
-        app.host_share = Some(Box::new(move || {
-            shares.set(shares.get() + 1);
-            Ok(())
-        }));
-        app.host_shares.set_opened("report.pdf");
-        app.open_bytes("report.pdf", None, fixture()).unwrap();
+    let (mut h, c) = harness(move |app| p.host(app, "report.pdf"));
+    h.state_mut().open_bytes("report.pdf", None, fixture()).unwrap();
+    h.run_steps(2);
+    assert_eq!(h.state().views.len(), 2);
+    assert_eq!(h.state().active, Some(1), "the local copy is in front");
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 0, "the page is not asked to share the local copy");
+    assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
+    h.state_mut().active = Some(0);
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 1, "the host's own document still shares");
+}
+
+/// The host stores a save under another name (Save As, a conflict copy): still the host's file.
+#[test]
+fn the_hosts_document_keeps_share_after_a_rename() {
+    let probe = Probe::default();
+    let p = probe.clone();
+    let (mut h, c) = harness(move |app| p.host(app, "report.pdf"));
+    let id = h.state().views[0].id;
+    let bytes = h.state().session.get(id).unwrap().saved_bytes();
+    h.state_mut().session.mark_saved(id, bytes, Some("report (copy).pdf".into())).unwrap();
+    h.run_steps(2);
+    assert_ne!(h.state().session.get(id).unwrap().name, "report.pdf", "the document was renamed");
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 1);
+}
+
+/// A second file from the host while the first is open does not take Share over silently.
+#[test]
+fn a_second_host_file_does_not_take_share_over() {
+    let probe = Probe::default();
+    let p = probe.clone();
+    let (mut h, c) = harness(move |app| p.host(app, "first.pdf"));
+    host_open(h.state_mut(), "second.pdf");
+    h.run_steps(3);
+    assert_eq!(h.state().views.len(), 2, "the second file opens");
+    let said = toast(&h).unwrap_or_default();
+    assert!(said.contains("first.pdf"), "the user is told which file Share is for: {said}");
+    h.state_mut().active = Some(1);
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 0, "the second file is not shared");
+    h.state_mut().active = Some(0);
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    assert_eq!(probe.host_shares.get(), 1, "the first still is");
+}
+
+/// The page could not be asked: the user is told, and nothing else happens.
+#[test]
+fn a_failed_host_request_is_reported() {
+    let (mut h, c) = harness(|app| {
+        Probe::default().host(app, "report.pdf");
+        app.host_share = Some(Box::new(|| Err("the page is gone".into())));
     });
     share_via(&mut h, &c, "control");
-    assert_eq!(probe.host_shares.get(), 0);
+    let said = toast(&h).unwrap_or_default();
+    assert!(said.contains("the page is gone") && said != NO_NEXTCLOUD, "{said}");
+    assert_eq!(h.state().last_opened_url, None);
+}
+
+/// A page that does not share files (it never said `share: true`, or took it back) gets no request.
+#[test]
+fn a_page_that_does_not_share_gets_nothing() {
+    for share in [false, true] {
+        let probe = Probe::default();
+        let p = probe.clone();
+        let (mut h, c) = harness(move |app| p.host(app, "report.pdf"));
+        // `share: false` from the start, or `share: true` then `share: false`.
+        h.state().host_shares.set_offered(share);
+        h.state().host_shares.set_offered(false);
+        share_via(&mut h, &c, "control");
+        assert_eq!(probe.host_shares.get(), 0);
+        assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
+    }
+}
+
+/// Save As to a path in a synced folder: Share follows the document's new file.
+#[test]
+fn share_follows_a_save_to_another_path() {
+    let (mut h, c) = harness(|app| app.open_bytes("local.pdf", Some("/home/alice/local.pdf".into()), fixture()).unwrap());
+    share_via(&mut h, &c, "control");
     assert_eq!(toast(&h).as_deref(), Some(NO_NEXTCLOUD));
+    let id = h.state().views[0].id;
+    let bytes = h.state().session.get(id).unwrap().saved_bytes();
+    h.state_mut().session.mark_saved(id, bytes, Some("/synced/Moved/local.pdf".into())).unwrap();
+    h.run_steps(2);
+    share_via(&mut h, &c, "control");
+    let expected = craft_share::sharing_url("https://cloud.example.test", "/Moved/local.pdf");
+    assert_eq!(h.state().last_opened_url.as_deref(), Some(expected.as_str()));
+}
+
+/// The app's own default reads no Nextcloud config: only the desktop app sets the real lookup.
+#[test]
+fn without_the_desktop_lookup_no_file_is_synced() {
+    let mut app = PdfCraftApp::new();
+    app.set_option("language", "en").unwrap();
+    app.open_bytes("q3.pdf", Some("/synced/Reports/q3.pdf".into()), fixture()).unwrap();
+    app.execute("file.share");
+    assert_eq!(app.toast.as_ref().map(|t| t.0.as_str()), Some(NO_NEXTCLOUD));
+    assert_eq!(app.last_opened_url, None);
 }
 
 static LOOKUPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

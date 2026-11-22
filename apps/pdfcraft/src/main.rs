@@ -485,6 +485,8 @@ fn app_creator<'a>(
             app.motion.source = Some(motion::source());
         }
         app.set_startup_update_check(true);
+        // Share: a file in a folder the Nextcloud desktop client syncs opens its sharing.
+        app.share_lookup = pdfcraft_ui_egui::craft_share::desktop_route;
         app.printer_source = Some(pdfcraft_ui_egui::system_printers());
         app.two_sided_source = Some(pdfcraft_ui_egui::system_two_sided());
         app.os_key_store_ids = cfg!(any(target_os = "macos", target_os = "windows"));

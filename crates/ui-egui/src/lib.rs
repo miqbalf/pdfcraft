@@ -132,6 +132,8 @@ use dialogs::rename_ui;
 use dialogs::standards_ui;
 use dialogs::word_count_ui;
 pub use home::folders_ui;
+/// Share's routes (`craft-share`), for the desktop app's [`PdfCraftApp::share_lookup`].
+pub use craft_share;
 pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, HostShareFn, HostShares, Inbox, OsEvent, OsEventsFn};
 use menus::tab_context;
 use panels::all_tools_ui;
@@ -588,10 +590,17 @@ pub struct PdfCraftApp {
     pub host_dirty: Option<HostDirtyFn>,
     /// Share asks the embedding page to share the file it opened (web, see [`HostShareFn`]).
     pub host_share: Option<HostShareFn>,
-    /// Whether the host shares files itself, and which file it opened ([`HostShares`]).
+    /// Whether the host shares files itself, and the files it queued to open ([`HostShares`]).
     pub host_shares: HostShares,
+    /// The document the host opened in the frame: the one file it can share. Kept by id, so a
+    /// host save under another name keeps it, and another document of the same name is not it.
+    pub host_doc: Option<DocId>,
+    /// Names of host files taken from the startup inbox whose document is not added yet (a
+    /// password prompt): the document opened under that name becomes [`Self::host_doc`].
+    host_opening: Vec<String>,
     /// Finds the Nextcloud account and remote path of a file in a folder the Nextcloud desktop
-    /// client syncs (desktop; tests put a fake config lookup here).
+    /// client syncs. The desktop app sets [`craft_share::desktop_route`]; until then (tests, the
+    /// web) no file is in a synced folder, so nothing reads the machine's Nextcloud config.
     #[cfg(not(target_arch = "wasm32"))]
     pub share_lookup: fn(&std::path::Path) -> craft_share::ShareRoute,
     /// [`Self::share_lookup`]'s answer per document, for the path it was asked about: asked again

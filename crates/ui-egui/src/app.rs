@@ -213,8 +213,10 @@ impl PdfCraftApp {
             host_dirty: None,
             host_share: None,
             host_shares: Default::default(),
+            host_doc: None,
+            host_opening: Vec::new(),
             #[cfg(not(target_arch = "wasm32"))]
-            share_lookup: craft_share::desktop_route,
+            share_lookup: |_| craft_share::ShareRoute::None,
             #[cfg(not(target_arch = "wasm32"))]
             desktop_shares: Default::default(),
             close_request: None,
@@ -701,8 +703,16 @@ impl PdfCraftApp {
             let startup = self.startup_inbox.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
             for (name, bytes) in startup {
                 let activate = !self.startup_superseded;
+                // A file the host handed over: the document it becomes is the one Share can share.
+                let from_host = self.host_shares.take_queued(&name);
+                if from_host {
+                    self.host_opening.push(name.clone());
+                }
                 if let Err(e) = self.open_bytes_with_focus(&name, None, bytes, activate) {
                     self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &e)]);
+                }
+                if from_host {
+                    self.host_open_settled(&name);
                 }
             }
         }
