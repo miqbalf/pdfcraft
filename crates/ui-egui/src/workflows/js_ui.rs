@@ -91,7 +91,7 @@ impl PdfCraftApp {
                 ),
                 Request::SaveAs => {
                     if let Some(i) = view {
-                        self.save_view(i, crate::SaveTarget::As);
+                        self.save_as_copy_in(i, "pdf");
                     }
                 }
                 Request::OpenAttachment { name, open } => self.open_script_attachment(id, &name, open),

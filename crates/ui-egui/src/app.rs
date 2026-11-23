@@ -226,6 +226,8 @@ impl PdfCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             pending_overwrite: None,
             save_override: None,
+            save_as_runtime: None,
+            downloads: Vec::new(),
             props_draft: None,
             attachment_description_draft: None,
             view_draft: None,

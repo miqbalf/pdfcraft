@@ -132,13 +132,18 @@ struct ExportTask<'a> {
     format: ImageFormat,
     min_side: u32,
     pages: Vec<usize>,
-    stem: String,
+    /// The document's name: the files are named after it ([`SAVE_AS`](crate::editing::SAVE_AS)).
+    doc_name: String,
+    /// The text file's name, when the user chose it (the desktop's save dialog).
+    text_name: Option<String>,
     status: &'a ExportStatus,
     lang: crate::i18n::Lang,
 }
 
 fn run(task: ExportTask<'_>, mut sink: impl FnMut(&str, Vec<u8>) -> Result<(), String>) -> String {
-    let ExportTask { src, kind, dpi, format, min_side, pages, stem, status, lang } = task;
+    let ExportTask { src, kind, dpi, format, min_side, pages, doc_name, text_name, status, lang } = task;
+    let list = crate::editing::SAVE_AS;
+    let fallback = crate::editing::save_as::FALLBACK;
     // May run on a worker thread: messages are drawn in the UI's language.
     crate::i18n::set_current(lang);
     let total = pages.len();
@@ -151,6 +156,11 @@ fn run(task: ExportTask<'_>, mut sink: impl FnMut(&str, Vec<u8>) -> Result<(), S
         set(0, None);
         let out = match pdfcraft_engine::export::extract_images(&src, &pages, min_side) {
             Ok(o) => o,
+            Err(e) => return crate::i18n::fmt(tl!("Export stopped: {e}"), &[("e", &e.to_string())]),
+        };
+        // The engine numbers the images by page; the stem is the copy's name without its extension.
+        let stem = match list.file_name(&doc_name, fallback, "all_images") {
+            Ok(n) => n.strip_suffix(".png").map(str::to_string).unwrap_or(n),
             Err(e) => return crate::i18n::fmt(tl!("Export stopped: {e}"), &[("e", &e.to_string())]),
         };
         for (k, img) in out.images.iter().enumerate() {
@@ -182,7 +192,7 @@ fn run(task: ExportTask<'_>, mut sink: impl FnMut(&str, Vec<u8>) -> Result<(), S
             // pages written so far.
             let mut done = 0;
             let result = ex.images(&pages, dpi, format, |p, img| {
-                sink(&format!("{stem}_page_{}.{}", p + 1, format.extension()), img)?;
+                sink(&page_image_name(&doc_name, p, format)?, img)?;
                 done += 1;
                 set(done, None);
                 Ok(())
@@ -208,7 +218,11 @@ fn run(task: ExportTask<'_>, mut sink: impl FnMut(&str, Vec<u8>) -> Result<(), S
         }
         ExportKind::Text => {
             set(0, None);
-            match ex.text_of(&pages).and_then(|text| sink(&format!("{stem}.txt"), text.into_bytes())) {
+            let name = match text_name {
+                Some(n) => Ok(n),
+                None => list.file_name(&doc_name, fallback, "text").map_err(|e| e.to_string()),
+            };
+            match name.and_then(|name| ex.text_of(&pages).and_then(|text| sink(&name, text.into_bytes()))) {
                 Ok(()) => {
                     if total == 1 {
                         crate::i18n::fmt(tl!("Exported the text of 1 page"), &[])
@@ -220,6 +234,27 @@ fn run(task: ExportTask<'_>, mut sink: impl FnMut(&str, Vec<u8>) -> Result<(), S
             }
         }
     }
+}
+
+/// The file page `page` (from 0) of `doc_name` is exported to as an image of `format`: the
+/// shared numbered name (`report-3.png`) with the extension of the encoder used, whatever
+/// extension the name kept, so the name, the bytes and the download's type
+/// ([`file_mime`]) always agree.
+pub(crate) fn page_image_name(doc_name: &str, page: usize, format: ImageFormat) -> Result<String, String> {
+    let list = crate::editing::SAVE_AS;
+    let name = list.numbered_file_name(doc_name, crate::editing::save_as::FALLBACK, "image", page + 1).map_err(|e| e.to_string())?;
+    let accepted = list.get("image").is_some_and(|f| name.rsplit_once('.').is_some_and(|(_, ext)| f.accepts(ext)));
+    let stem = match name.rsplit_once('.') {
+        Some((stem, _)) if accepted => stem,
+        _ => &name,
+    };
+    Ok(format!("{stem}.{}", format.extension()))
+}
+
+/// The type a file exported as `name` downloads as: from the extension it was written with.
+#[cfg(any(test, target_arch = "wasm32"))]
+fn file_mime(name: &str) -> &'static str {
+    craft_share::export::mime_for_ext(name.rsplit_once('.').map_or("", |(_, ext)| ext))
 }
 
 impl PdfCraftApp {
@@ -235,7 +270,9 @@ impl PdfCraftApp {
         }
         let Some(doc) = self.session.get(id) else { return };
         let src = doc.export_source();
-        let stem = doc.name.trim_end_matches(".pdf").trim_end_matches(".PDF").to_string();
+        let doc_name = doc.name.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        let doc_path = doc.path.clone();
         let pages = self.export_draft.range.pages(src.pages);
         let dpi = self.export_draft.dpi;
         let format = self.export_draft.format;
@@ -243,7 +280,9 @@ impl PdfCraftApp {
         let status: ExportStatus = Arc::new(Mutex::new(Some((0, pages.len(), None))));
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let start = move |app: &mut Self, dir: std::path::PathBuf, inline: bool| {
+            // One text file: the save dialog asks for its name, as for every other copy.
+            let text_plan = (kind == ExportKind::Text).then(|| self.copy_plan(&doc_name, "text"));
+            let start = move |app: &mut Self, dir: std::path::PathBuf, inline: bool, text_name: Option<String>| {
                 let st = status.clone();
                 let shown = dir.display().to_string();
                 let lang = crate::i18n::current();
@@ -251,7 +290,7 @@ impl PdfCraftApp {
                     let sink = |name: &str, bytes: Vec<u8>| {
                         crate::editing::write_atomically(&dir.join(name).to_string_lossy(), &bytes).map_err(|e| format!("{name}: {e}"))
                     };
-                    let msg = run(ExportTask { src, kind, dpi, format, min_side, pages, stem, status: &st, lang }, sink);
+                    let msg = run(ExportTask { src, kind, dpi, format, min_side, pages, doc_name, text_name, status: &st, lang }, sink);
                     if let Ok(mut s) = st.lock() {
                         let (done, total) = s.as_ref().map_or((0, 0), |(d, t, _)| (*d, *t));
                         let done_msg = crate::i18n::fmt(tl!("{msg} to {dir}"), &[("msg", &msg), ("dir", &shown)]);
@@ -266,19 +305,33 @@ impl PdfCraftApp {
                 app.export_status = Some(status);
             };
             match self.export_dir_override.clone() {
-                Some(d) => start(self, d.into(), true),
+                Some(d) => start(self, d.into(), true, None),
+                None if text_plan.is_some() => {
+                    let plan = match text_plan {
+                        Some(Ok(p)) => p,
+                        Some(Err(e)) => return self.notify_error(e),
+                        None => return,
+                    };
+                    self.pick_copy_path(&plan, doc_path.as_deref(), tl!("Export"), move |app, path| {
+                        let path = std::path::PathBuf::from(path);
+                        let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                        let dir = path.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+                        start(app, dir, false, name);
+                    });
+                }
                 None => {
                     let dialog = rfd::AsyncFileDialog::new().set_title(tl!("Choose a folder for the exported files").to_string());
-                    self.ask_one(crate::pickers::Ask::Folder(dialog), None, move |app, dir| start(app, dir, false));
+                    self.ask_one(crate::pickers::Ask::Folder(dialog), None, move |app, dir| start(app, dir, false, None));
                 }
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let msg =
-                run(ExportTask { src, kind, dpi, format, min_side, pages, stem, status: &status, lang: crate::i18n::current() }, |name, bytes| {
-                    crate::editing::download(name, &bytes)
-                });
+            let msg = run(
+                ExportTask { src, kind, dpi, format, min_side, pages, doc_name, text_name: None, status: &status, lang: crate::i18n::current() },
+                // Each file downloads as the type it is (PNG, JPEG, TIFF or text).
+                |name, bytes| craft_web_host::web::download(name, file_mime(name), &bytes),
+            );
             if let Ok(mut s) = status.lock() {
                 *s = Some((0, 0, Some(msg)));
             }
@@ -304,5 +357,29 @@ impl PdfCraftApp {
         if let Some(ctx) = &self.ctx {
             ctx.request_repaint_after(std::time::Duration::from_millis(200));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{file_mime, page_image_name};
+    use pdfcraft_engine::export::ImageFormat;
+
+    /// The extension, and so the download's type, follow the encoder, not the name's extension
+    /// nor the list's default (PNG).
+    #[test]
+    fn page_images_are_named_and_typed_by_the_encoder_used() {
+        let jpeg = ImageFormat::Jpeg { quality: 80 };
+        for doc in ["x.pdf", "x.jpg", "x.PNG"] {
+            let name = page_image_name(doc, 0, jpeg).unwrap();
+            assert!(name.starts_with('x') && name.ends_with(".jpg"), "{doc}: {name}");
+            assert_eq!(file_mime(&name), "image/jpeg");
+            let png = page_image_name(doc, 2, ImageFormat::Png).unwrap();
+            assert!(png.ends_with(".png") && png.contains('3'), "{doc}: {png}");
+            assert_eq!(file_mime(&png), "image/png");
+            let tif = page_image_name(doc, 0, ImageFormat::Tiff).unwrap();
+            assert_eq!(file_mime(&tif), "image/tiff", "{tif}");
+        }
+        assert_ne!(page_image_name("x.pdf", 0, jpeg).unwrap(), page_image_name("x.pdf", 1, jpeg).unwrap(), "one file per page");
     }
 }

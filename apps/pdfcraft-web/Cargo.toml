@@ -14,9 +14,9 @@ pdfcraft-ui-egui = { workspace = true }
 # The host messages (storytold/craft-libs): one contract and one bridge for the web builds.
 # The page command API (storytold/craft-libs#413): window.pdfcraft over the UI control channel.
 craft-web-api = { git = "https://github.com/storytold/craft-libs", rev = "fd5e2feff6ea25bed371a99cc732b3968d621505", version = "0.1.0" }
-# The host saves/save-failed/fonts and share messages are on the miqbalf fork's feat/share-hook until
+# The host saves/save-failed/fonts and share messages are on the miqbalf fork's feat/save-as until
 # merged upstream (the same rev as craft-share).
-craft-web-host = { git = "https://github.com/miqbalf/craft-libs", rev = "0434267cbc03705d1a4a22986bfc533ae92b812b", version = "0.1.0" }
+craft-web-host = { workspace = true }
 eframe = { workspace = true, features = ["default_fonts", "glow", "persistence", "accesskit"] }
 egui = { workspace = true, features = ["default_fonts", "monochrome_emoji_fonts"] }
 serde_json = { workspace = true }

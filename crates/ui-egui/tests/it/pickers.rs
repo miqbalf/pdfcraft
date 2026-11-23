@@ -150,7 +150,9 @@ fn save_as_writes_on_a_later_frame_including_edits_made_meanwhile() {
     h.state_mut().apply_edit(pdfcraft_engine::Edit::DeletePages { pages: vec![0] });
     h.run_steps(2);
     assert_eq!(page_count(std::fs::read(&out).unwrap()), 2, "the edit made while choosing is saved too");
-    assert!(!dirty(h.state(), 0));
+    // Save As is a copy: the document keeps its unsaved changes and its own (lack of a) file.
+    assert!(dirty(h.state(), 0));
+    assert!(h.state().session.get(h.state().views[0].id).unwrap().path.is_none());
     let _ = std::fs::remove_dir_all(&dir);
 }
 

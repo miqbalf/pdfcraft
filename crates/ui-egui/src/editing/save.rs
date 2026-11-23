@@ -26,8 +26,13 @@ pub struct PendingLock {
 pub enum SaveTarget {
     /// The file's own path; asks for one if the document has none (e.g. opened from bytes).
     InPlace,
-    /// Always ask for a new location.
+    /// Always ask for a new location, and make that file the document's (a new document, or one
+    /// whose redactions must not go over its file).
     As,
+    /// Save As: a PDF copy, downloaded on the web and written where the user chooses on the
+    /// desktop. The document keeps its file, name, unsaved changes and saved state
+    /// ([`PdfCraftApp::save_as_copy`]).
+    Copy,
 }
 
 impl PdfCraftApp {
@@ -90,7 +95,11 @@ impl PdfCraftApp {
         // The restored content is not a redacted copy: propose the name without `_Redacted`, so
         // the dialog's default is not the redacted file.
         let name = if unredacted && !redacted { unredacted_file_name(&name) } else { name };
-        let target = if not_delivered || unredacted { SaveTarget::As } else { target };
+        // A copy leaves the document as it is, so it need not become another file.
+        let target = if target != SaveTarget::Copy && (not_delivered || unredacted) { SaveTarget::As } else { target };
+        if target == SaveTarget::Copy {
+            return self.save_copy(id, &name, path.as_deref(), Box::new(after));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let doc_path = path.clone();
@@ -142,6 +151,7 @@ impl PdfCraftApp {
             // A host that answers each save gets an id; the document counts as saved when it says so.
             let confirmed = to_host && self.host_saves.confirms();
             let save_id = confirmed.then(|| self.next_host_save_id());
+            // Plain Save only: a Save As is a copy (`save_copy`) and never reaches the host.
             let delivered = match &self.host_save {
                 Some(save) => save(&name, &bytes, matches!(target, SaveTarget::As), save_id.as_deref()),
                 None => download(&name, &bytes),
@@ -181,6 +191,104 @@ impl PdfCraftApp {
                 }
             }
         }
+    }
+
+    /// Save As: deliver a PDF copy of document `id` (named after `name`, stored at `doc_path`)
+    /// as [`Self::copy_plan`] says, then `after`. Never touches the document's file, name, dirty
+    /// flag or saved state, and never goes to a hosting page.
+    fn save_copy(&mut self, id: pdfcraft_engine::DocId, name: &str, doc_path: Option<&str>, after: Box<dyn FnOnce(&mut Self) + Send>) -> bool {
+        let plan = match self.copy_plan(name, "pdf") {
+            Ok(p) => p,
+            Err(e) => {
+                self.notify_error(e);
+                return false;
+            }
+        };
+        match plan.delivery {
+            craft_share::export::Delivery::Download => {
+                let Some(bytes) = self.copy_bytes(id, None) else { return false };
+                match self.download_copy(&plan.file_name, plan.format.mime, &bytes) {
+                    Ok(()) => {
+                        self.notify_fmt("Downloaded {name}", &[("name", &plan.file_name)]);
+                        after(self);
+                        true
+                    }
+                    Err(e) => {
+                        self.notify_fmt("Couldn't download {name}: {e}", &[("name", &plan.file_name), ("e", &e)]);
+                        false
+                    }
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            craft_share::export::Delivery::SaveDialog => {
+                let written = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let w = written.clone();
+                // The bytes are taken once the user has chosen, so edits made meanwhile are in the copy.
+                self.pick_copy_path(&plan, doc_path, tl!("Save as…"), move |app, dest| {
+                    if app.write_copy(id, &dest, after) {
+                        w.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                });
+                written.load(std::sync::atomic::Ordering::SeqCst)
+            }
+            #[cfg(target_arch = "wasm32")]
+            craft_share::export::Delivery::SaveDialog => {
+                let _ = doc_path;
+                false
+            }
+        }
+    }
+
+    /// The bytes of a copy of document `id`, ready to deliver: what is typed is committed, Fill &
+    /// Sign marks are locked when the preferences say so, and the document's WillSave actions run,
+    /// as for a save. A copy is a clean file without earlier revisions (#2165) unless the document
+    /// is signed (its signatures must keep covering it), read-only, or `dest` is its own file.
+    /// `None`, having said why, when it cannot be made.
+    fn copy_bytes(&mut self, id: pdfcraft_engine::DocId, dest: Option<&str>) -> Option<Vec<u8>> {
+        if !self.commit_typing_in(id) || !self.flatten_fill_sign_for_save(id) {
+            return None;
+        }
+        let Some((name, full)) = self.session.get(id).map(|d| {
+            #[cfg(not(target_arch = "wasm32"))]
+            let own = d.path.as_deref().zip(dest).is_some_and(|(p, dest)| crate::same_file(p, dest));
+            // The web build has no files: a copy is never written over the document's own.
+            #[cfg(target_arch = "wasm32")]
+            let own = {
+                let _ = dest;
+                false
+            };
+            (d.name.clone(), !own && d.read_only_reason.is_none() && !d.is_signed())
+        }) else {
+            self.notify_tr("The document was closed before it could be saved.");
+            return None;
+        };
+        self.run_document_actions(id, pdfcraft_engine::js::DocumentScriptEvent::WillSave);
+        let bytes = if full { self.session.save_full_bytes(id) } else { self.session.save_bytes(id) };
+        match bytes.and_then(|b| self.session.check_save(id, &b).map(|()| b)) {
+            Ok(b) => Some(b.to_vec()),
+            Err(e) => {
+                self.notify_fmt("Couldn't save {name}: {e}", &[("name", &name), ("e", &e.to_string())]);
+                None
+            }
+        }
+    }
+
+    /// Write a PDF copy of document `id` to `dest`, then `after`. The copy is not the
+    /// document's file: its path, name, dirty flag and saved state stay. A copy picked over the
+    /// document's own file is a plain Save of it. Returns `true` if written.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn write_copy(&mut self, id: pdfcraft_engine::DocId, dest: &str, after: Box<dyn FnOnce(&mut Self) + Send>) -> bool {
+        if self.session.get(id).and_then(|d| d.path.as_deref()).is_some_and(|p| crate::same_file(p, dest)) {
+            return self.save_doc_to_then(id, dest, SaveTarget::InPlace, after);
+        }
+        let Some(bytes) = self.copy_bytes(id, Some(dest)) else { return false };
+        if let Err(e) = write_atomically(dest, &bytes) {
+            self.notify_fmt("Couldn't save {name}: {e}", &[("name", dest), ("e", &e.to_string())]);
+            return false;
+        }
+        self.notify_fmt("Saved {name}", &[("name", &short_name(dest))]);
+        after(self);
+        true
     }
 
     /// [`Self::save_doc_to`], then `after`. When `dest` is the document's own file and it is
@@ -463,22 +571,9 @@ pub fn download_mime_type(name: &str) -> &'static str {
     }
 }
 
-/// Offer bytes as a browser download.
+/// Offer bytes as a browser download: the shared download every web copy goes through
+/// (`craft_web_host::web::download`), typed by the name's extension.
 #[cfg(target_arch = "wasm32")]
 pub(crate) fn download(name: &str, bytes: &[u8]) -> Result<(), String> {
-    use wasm_bindgen::JsCast;
-    let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
-    let array = js_sys::Uint8Array::from(bytes);
-    let parts = js_sys::Array::of1(&array);
-    let opts = web_sys::BlobPropertyBag::new();
-    opts.set_type(download_mime_type(name));
-    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &opts).map_err(err)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(err)?;
-    let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
-    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(err)?.dyn_into().map_err(|_| "anchor")?;
-    a.set_href(&url);
-    a.set_download(name);
-    a.click();
-    let _ = web_sys::Url::revoke_object_url(&url);
-    Ok(())
+    craft_web_host::web::download(name, download_mime_type(name), bytes)
 }

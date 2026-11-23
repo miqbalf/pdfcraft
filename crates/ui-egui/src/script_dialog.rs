@@ -381,7 +381,8 @@ mod review13_ui_tests {
             assert!(app.session.get(new).unwrap().path.is_none());
             if request.contains("SaveAs") {
                 assert_eq!(app.active_ids().unwrap().1, new, "Save As need not change the comparison tab");
-                assert_eq!(app.session.get(old).unwrap().path.as_deref(), saved.to_str());
+                // Save As writes a copy: the source keeps its own (lack of a) file.
+                assert!(app.session.get(old).unwrap().path.is_none());
                 let mut reopened = pdfcraft_engine::Session::new();
                 let id = reopened.open("saved.pdf", None, std::sync::Arc::new(std::fs::read(&saved).unwrap()), None).unwrap();
                 assert_eq!(reopened.get(id).unwrap().info.pages.len(), 2, "the saved file is the two-page source, not the one-page active file");

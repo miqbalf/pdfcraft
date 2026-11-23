@@ -624,6 +624,15 @@ pub struct PdfCraftApp {
     pub pending_overwrite: Option<editing::PendingOverwrite>,
     /// Save to this path instead of asking (tests and automation).
     pub save_override: Option<String>,
+    /// Plan Save As / Export copies for this runtime instead of the build's own (tests and
+    /// automation): `Web` or `WebHosted` make a native build deliver copies as the browser build
+    /// does, into [`Self::downloads`].
+    #[doc(hidden)]
+    pub save_as_runtime: Option<craft_share::export::Runtime>,
+    /// Copies a native build delivered as downloads under [`Self::save_as_runtime`]:
+    /// (file name, MIME type, bytes).
+    #[doc(hidden)]
+    pub downloads: Vec<(String, String, Vec<u8>)>,
     /// Document Properties ▸ Description fields being edited: (document, Title/Author/Subject/Keywords).
     pub props_draft: Option<(DocId, [String; 4])>,
     /// Attachment description being edited: (document, name-tree key, description).

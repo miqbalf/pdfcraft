@@ -199,8 +199,9 @@ impl PdfCraftApp {
             "file.save" => {
                 self.save_active(SaveTarget::InPlace);
             }
+            // Save As = Export: a copy, through the one Save As function.
             "file.save_as" => {
-                self.save_active(SaveTarget::As);
+                self.save_as_copy("pdf");
             }
             "file.close" => {
                 if let Some(i) = active {
@@ -559,8 +560,11 @@ impl PdfCraftApp {
                 };
                 self.apply_edit(Edit::RemoveMarks { kind });
             }
-            "export.image" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::Image)),
-            "export.text" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::Text)),
+            "export.image" | "export.text" | "export.all_images" | "export.docx" | "export.pptx" | "export.html" | "export.rtf" => {
+                if let Some(format) = crate::editing::save_as::command_format(id) {
+                    self.save_as_copy(format);
+                }
+            }
             "ocr.recognize" => self.dialog = Some(Dialog::RecognizeText),
             "ocr.enhance" => self.dialog = Some(Dialog::EnhanceScan),
             "ocr.recognize_batch" => self.ocr_files_dialog(),
@@ -579,7 +583,6 @@ impl PdfCraftApp {
                     self.choose_right_panel(Some(crate::RightPanel::Search));
                 }
             }
-            "export.all_images" => self.dialog = Some(Dialog::Export(crate::export_ui::ExportKind::AllImages)),
             "edit.text" => {
                 self.quick_tool = crate::QuickTool::AddText;
                 self.left = crate::LeftPanel::Tool("edit");
@@ -628,10 +631,6 @@ impl PdfCraftApp {
                     }
                 }
             }
-            "export.docx" => self.export_office_dialog(pdfcraft_engine::compare::OfficeFormat::Docx),
-            "export.pptx" => self.export_office_dialog(pdfcraft_engine::compare::OfficeFormat::Pptx),
-            "export.html" => self.export_office_dialog(pdfcraft_engine::compare::OfficeFormat::Html),
-            "export.rtf" => self.export_office_dialog(pdfcraft_engine::compare::OfficeFormat::Rtf),
             "ocr.enhance_camera" => {
                 // The corners start on the document's edges when they can be found, else
                 // inset on the current page (camera_ui::page_input).

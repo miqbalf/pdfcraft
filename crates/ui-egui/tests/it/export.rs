@@ -31,7 +31,8 @@ fn export_dialogs_write_images_and_text() {
     h.get_by_label("Export to Image");
     h.get_by_label("Export").click();
     h.run_steps(4);
-    assert!(dir.join("doc_page_1.png").exists() && dir.join("doc_page_2.png").exists());
+    // The shared numbered names (`craft_share::export::ExportList::numbered_file_name`).
+    assert!(dir.join("doc-1.png").exists() && dir.join("doc-2.png").exists());
     h.get_by_label_contains("Exported 2 images");
     assert!(h.state_mut().execute("export.text"));
     h.run_steps(2);

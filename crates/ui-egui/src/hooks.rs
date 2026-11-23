@@ -21,8 +21,9 @@ pub enum OsEvent {
 /// Returns the [`OsEvent`]s that arrived since it was last called (set by the desktop app).
 pub type OsEventsFn = Box<dyn FnMut() -> Vec<OsEvent>>;
 
-/// Hands a saved PDF to the page embedding PdfCraft (web): `(name, bytes, save_as, id)`. `save_as`
-/// is `true` for Save As. `id` is set when the host stores saves and answers each one
+/// Hands a saved PDF to the page embedding PdfCraft (web): `(name, bytes, save_as, id)`. Plain
+/// Save only: Save As is a copy that downloads and never comes here. `save_as` is `true` when
+/// the Save must make a new file (a redacted document, or one whose saved redactions were undone). `id` is set when the host stores saves and answers each one
 /// ([`HostSaves::confirms`]): it names the save its `saved` or `save-failed` answers. Set by the
 /// web app when a host page (such as a Nextcloud app) asked for saves; without it the browser
 /// downloads the file.
