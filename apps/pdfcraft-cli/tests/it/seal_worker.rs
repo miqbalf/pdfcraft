@@ -524,7 +524,8 @@ fn a_ninth_connection_waits_for_a_free_slot() {
     let n = nonce();
     let t = now();
     let mac = hmac(&format!("GET\n/v1/health\n{}\n{t}\n{n}", sha(b"")));
-    let req = format!("GET /v1/health HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {t}\r\nX-Craft-Seal-Nonce: {n}\r\nX-Craft-Seal-Mac: {mac}\r\n\r\n");
+    let req =
+        format!("GET /v1/health HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {t}\r\nX-Craft-Seal-Nonce: {n}\r\nX-Craft-Seal-Mac: {mac}\r\n\r\n");
     ninth.write_all(req.as_bytes()).expect("sends");
     ninth.set_read_timeout(Some(Duration::from_secs(3))).expect("timeout");
     let mut buf = [0u8; 64];
