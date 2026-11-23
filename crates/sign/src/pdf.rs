@@ -39,7 +39,9 @@ use listing::{DISCOVERY_CACHE_LIMIT, Field, MAX_ENTRIES, MAX_FIELDS, MAX_NAME_BY
 pub use listing::{DigestCache, list, list_cached};
 pub(crate) use listing::{walk_sig_fields, widget_shown};
 pub(crate) use signing::fmt;
-pub use signing::{Appearance, AppearanceLabels, SignOptions, display_date, has_signatures, sign, sign_with_timestamp, timestamp_document};
+pub use signing::{
+    Appearance, AppearanceLabels, FieldLock, LockAction, SignOptions, display_date, has_signatures, sign, sign_with_timestamp, timestamp_document,
+};
 pub use types::{Detail, Fill, Modification, Status, TrustStore, WORDINGS, Words, in_english, kind};
 pub(crate) use validate::signature_contents;
 pub use validate::validate;
@@ -82,6 +84,10 @@ pub struct SignatureInfo {
     pub doc_timestamp: bool,
     /// DocMDP permissions when this is a certification signature (1–3).
     pub certify: Option<u8>,
+    /// The permissions (1–3) the signed field's lock (`/Lock /P`, ISO 32000-2 §12.7.5.5) sets for
+    /// every later change, as the signed revision has them: 1 when the signature locked the
+    /// document. Later revisions are judged by the stricter of this and [`Self::certify`].
+    pub locks_document: Option<u8>,
     /// 1-based revision the signature covers.
     pub revision: usize,
     /// Length of the signed revision (bytes) — "View signed version".

@@ -114,7 +114,14 @@ fn rules(old: &Document, field: &Field, value: &Dict) -> Result<Vec<Rule>, ()> {
     let mut out = Vec::new();
     if let Some(lock) = field.dict.get(b"Lock").map(|l| old.resolve(l)) {
         match &*lock {
-            Object::Dict(d) => out.push(rule(old, d)?),
+            Object::Dict(d) => {
+                // A `/P` that is not one of the three permission levels is a lock that can't be
+                // read: it would otherwise pass as a lock that allows everything.
+                if d.get(b"P").is_some() && lock_level(old, d).is_none() {
+                    return Err(());
+                }
+                out.push(rule(old, d)?)
+            }
             Object::Null => {}
             _ => return Err(()),
         }
@@ -140,6 +147,21 @@ fn rules(old: &Document, field: &Field, value: &Dict) -> Result<Vec<Rule>, ()> {
         }
     }
     Ok(out)
+}
+
+/// The permission level (`/P`, 1 to 3) of lock dictionary `d`, or `None` when it has none or one
+/// that is not a level.
+fn lock_level(doc: &Document, d: &Dict) -> Option<u8> {
+    d.get(b"P").and_then(|p| doc.resolve(p).as_int()).and_then(|p| u8::try_from(p).ok()).filter(|p| (1..=3).contains(p))
+}
+
+/// The DocMDP permissions (1 to 3) signature field `field`'s lock (`/Lock /P`, ISO 32000-2
+/// §12.7.5.5; PDF 2.0) sets for every change after its signature, as the signed revision `old`
+/// has it: `None` without a lock or a `/P`. A `/P` that is there but not a level is not read here;
+/// [`locked_fields`] reports such a lock as unchecked.
+pub(super) fn lock_permissions(old: &Document, field: &Field) -> Option<u8> {
+    let lock = field.dict.get(b"Lock").map(|l| old.resolve(l))?;
+    lock_level(old, lock.as_dict()?)
 }
 
 /// Whether any field the signature in `field` (signed with `value`) locks in the signed revision

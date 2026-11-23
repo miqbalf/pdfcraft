@@ -1,6 +1,6 @@
 use super::changes::classify_changes;
 use super::listing::{DigestCache, list, nums, sig_fields, text};
-use super::locks::{Locked, locked_fields};
+use super::locks::{Locked, lock_permissions, locked_fields};
 use super::types::{Detail, Fill, Modification, Status, TrustStore, kind};
 use super::{
     Certificate, Dict, DigestAlg, Document, HashSet, ObjRef, Object, SignError, SignatureInfo, SignedData, Time, build_chain, build_chain_noted,
@@ -273,6 +273,8 @@ fn finish_validation(context: SignatureValidation<'_>, verified: VerifiedSignatu
     // Changes after signing.
     let mut locks = Locked::Kept;
     info.modification = if covered == bytes.len() || bytes[covered..].iter().all(|b| b.is_ascii_whitespace() || *b == 0) {
+        // Nothing came after: the document is the signed revision, whose field holds the lock.
+        info.locks_document = sig_fields(doc).iter().find(|f| f.name == info.field).and_then(|f| lock_permissions(doc, f));
         Modification::None
     } else {
         // The permissions are the signed revision's: a later one can rewrite `/P` (#1788) or the
@@ -313,7 +315,15 @@ fn finish_validation(context: SignatureValidation<'_>, verified: VerifiedSignatu
                     None if candidates.iter().any(|(f, v)| locked_fields(doc, &old, f, v) != Locked::Kept) => Locked::Unchecked,
                     None => Locked::Kept,
                 };
-                match classify_changes(doc, Some(old), info.certify) {
+                // A lock's `/P` sets the permissions every later change is judged by, as a
+                // certification's does; with both, the stricter one counts. Unbound, the
+                // strictest lock among the candidates counts.
+                info.locks_document = candidates.iter().filter_map(|(f, _)| lock_permissions(&old, f)).min();
+                let permissions = match (info.certify, info.locks_document) {
+                    (Some(c), Some(l)) => Some(c.min(l)),
+                    (c, l) => c.or(l),
+                };
+                match classify_changes(doc, Some(old), permissions) {
                     Modification::Allowed(_) if locks == Locked::Changed => Modification::Disallowed(vec![kind::LOCKED_FIELD]),
                     Modification::Disallowed(mut kinds) if locks == Locked::Changed => {
                         kinds.push(kind::LOCKED_FIELD);

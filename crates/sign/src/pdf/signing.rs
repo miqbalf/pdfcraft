@@ -87,6 +87,75 @@ pub struct SignOptions {
     pub appearance_labels: AppearanceLabels,
     /// A drawing, typed signature or image shown where the large name would be.
     pub graphic: Option<crate::graphic::Graphic>,
+    /// Lock fields, or the whole document, once this signature is applied: the field's signature
+    /// field lock dictionary and a FieldMDP reference in the signature dictionary.
+    pub lock: Option<FieldLock>,
+}
+
+/// Which fields a lock covers (`/Action` with `/Fields`, ISO 32000-2 §12.7.5.5, Table 236). Names
+/// are fully qualified field names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LockAction {
+    All,
+    Include(Vec<String>),
+    Exclude(Vec<String>),
+}
+
+/// What a signature locks once it is applied: written as the signed field's `/Lock`
+/// (`/Type /SigFieldLock`, ISO 32000-2 §12.7.5.5) and as a FieldMDP signature reference
+/// (§12.8.1, §12.8.2.4). `permissions` is the lock's `/P` (PDF 2.0): the DocMDP permission values
+/// later changes are judged by (1 no changes, 2 form fill and signing, 3 also comments). A lock is
+/// not a certification: the catalog's `/Perms` is left alone, as only the document's first
+/// signature may certify (§12.8.2.2).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FieldLock {
+    pub action: LockAction,
+    pub permissions: Option<u8>,
+}
+
+impl FieldLock {
+    /// Every field locked and no further changes allowed: `/Action /All /P 1`.
+    pub fn whole_document() -> Self {
+        Self { action: LockAction::All, permissions: Some(1) }
+    }
+
+    /// The `/Action` and `/Fields` entries shared by the lock dictionary and the FieldMDP
+    /// transform parameters.
+    fn scope(&self, d: &mut Dict) {
+        let (action, names) = match &self.action {
+            LockAction::All => ("All", None),
+            LockAction::Include(n) => ("Include", Some(n)),
+            LockAction::Exclude(n) => ("Exclude", Some(n)),
+        };
+        d.set(b"Action".to_vec(), Object::name(action));
+        if let Some(names) = names {
+            d.set(b"Fields".to_vec(), Object::Array(names.iter().map(|n| Object::from(PdfString::text(n))).collect()));
+        }
+    }
+
+    /// The signature field lock dictionary (`/Lock`).
+    fn lock_dict(&self) -> Dict {
+        let mut d = Dict::new();
+        d.set(b"Type".to_vec(), Object::name("SigFieldLock"));
+        self.scope(&mut d);
+        if let Some(p) = self.permissions {
+            d.set(b"P".to_vec(), Object::Int(i64::from(p)));
+        }
+        d
+    }
+
+    /// The FieldMDP signature reference dictionary.
+    fn reference(&self) -> Dict {
+        let mut tp = Dict::new();
+        tp.set(b"Type".to_vec(), Object::name("TransformParams"));
+        self.scope(&mut tp);
+        tp.set(b"V".to_vec(), Object::name("1.2"));
+        let mut sr = Dict::new();
+        sr.set(b"Type".to_vec(), Object::name("SigRef"));
+        sr.set(b"TransformMethod".to_vec(), Object::name("FieldMDP"));
+        sr.set(b"TransformParams".to_vec(), Object::Dict(tp));
+        sr
+    }
 }
 
 /// What an encrypted document's permissions (ISO 32000-2 §7.6.4.2, Table 22) allow when it was
@@ -182,6 +251,11 @@ fn sign_inner(
         return Err(SignError::Pdf("save the document's new security settings before signing it".into()));
     }
     check_signing_permissions(doc, opts)?;
+    if let Some(p) = opts.lock.as_ref().and_then(|l| l.permissions)
+        && !(1..=3).contains(&p)
+    {
+        return Err(SignError::Pdf(format!("a lock's permissions are 1, 2 or 3, not {p}")));
+    }
     let mut doc = doc.clone();
     let earlier_signatures = has_signatures(&doc);
     let root = doc.root().ok_or_else(|| SignError::Pdf("the document has no catalog".into()))?;
@@ -208,6 +282,9 @@ fn sign_inner(
     let mut build = Dict::new();
     build.set(b"App".to_vec(), Object::Dict(app));
     v.set(b"Prop_Build".to_vec(), Object::Dict(build));
+    // Signature references (ISO 32000-2 §12.8.1): DocMDP when certifying, FieldMDP when locking,
+    // both in the one array when both are asked for.
+    let mut references = Vec::new();
     if let Some(p) = opts.certify {
         let mut tp = Dict::new();
         tp.set(b"Type".to_vec(), Object::name("TransformParams"));
@@ -217,8 +294,15 @@ fn sign_inner(
         sr.set(b"Type".to_vec(), Object::name("SigRef"));
         sr.set(b"TransformMethod".to_vec(), Object::name("DocMDP"));
         sr.set(b"TransformParams".to_vec(), Object::Dict(tp));
-        v.set(b"Reference".to_vec(), Object::Array(vec![Object::Dict(sr)]));
+        references.push(Object::Dict(sr));
     }
+    if let Some(lock) = &opts.lock {
+        references.push(Object::Dict(lock.reference()));
+    }
+    if !references.is_empty() {
+        v.set(b"Reference".to_vec(), Object::Array(references));
+    }
+    let lock = opts.lock.as_ref().map(|l| Object::Dict(l.lock_dict()));
     let sig = doc.add(Object::Dict(v.clone()));
     if opts.certify.is_some() {
         // Catalog /Perms /DocMDP points at the certification signature.
@@ -243,7 +327,12 @@ fn sign_inner(
                 return Err(SignError::Pdf(format!("the value of the field {:?} is not a signature", f.name)));
             }
             let fr = f.r.ok_or_else(|| SignError::Pdf("the field is not an indirect object".into()))?;
-            doc.update_dict(fr, |d| d.set(b"V".to_vec(), Object::Ref(sig)))?;
+            doc.update_dict(fr, |d| {
+                d.set(b"V".to_vec(), Object::Ref(sig));
+                if let Some(l) = &lock {
+                    d.set(b"Lock".to_vec(), l.clone());
+                }
+            })?;
             let (wr, wd) = f.widgets.first().cloned().ok_or_else(|| SignError::Pdf("the field has no widget".into()))?;
             let rect = nums(&doc, &wd, b"Rect").filter(|r| r.len() == 4).map(|r| [r[0].min(r[2]), r[1].min(r[3]), r[0].max(r[2]), r[1].max(r[3])]);
             // The field's own rotation, as a form author set it: an existing field is not
@@ -268,6 +357,9 @@ fn sign_inner(
                 return Err(SignError::Pdf("a signature field needs a name that isn't blank".into()));
             }
             w.set(b"V".to_vec(), Object::Ref(sig));
+            if let Some(l) = &lock {
+                w.set(b"Lock".to_vec(), l.clone());
+            }
             w.set(b"Rect".to_vec(), Object::Array(rect.iter().map(|x| Object::Real(*x)).collect()));
             w.set(b"P".to_vec(), Object::Ref(page));
             // Print + Locked.

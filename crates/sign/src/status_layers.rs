@@ -871,6 +871,7 @@ mod tests {
             sub_filter: None,
             doc_timestamp: false,
             certify: None,
+            locks_document: None,
             revision: 1,
             signed_len: 0,
             digest: None,

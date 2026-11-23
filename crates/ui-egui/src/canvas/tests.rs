@@ -75,6 +75,7 @@ fn signature(signed: bool, visible: bool, page: Option<usize>, rect: Option<[f64
         sub_filter: None,
         doc_timestamp: false,
         certify: None,
+        locks_document: None,
         revision: 1,
         signed_len: 0,
         digest: None,
