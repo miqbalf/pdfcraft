@@ -196,7 +196,16 @@ fn three_signers_in_turn_then_final_seal_all_valid() {
     }
     let s = signed.iter().find(|s| s.field == seal_field(RID)).expect("the seal");
     assert_eq!(s.modification, "none", "the seal covers the whole file");
-    assert_eq!(last.signatures, report.signatures, "the seal reports what inspect sees");
+    // The seal checks against its own root (the instance CA), so its own signatures are valid;
+    // inspect, trusting nothing, sees them as unknown. Everything else is the same.
+    assert_eq!(last.signatures.len(), report.signatures.len());
+    for (ours, seen) in last.signatures.iter().zip(&report.signatures) {
+        assert_eq!((&ours.field, ours.signed, &ours.modification), (&seen.field, seen.signed, &seen.modification));
+        if ours.signed {
+            assert_eq!(ours.status, "valid", "the seal's own signatures verify against its root: {ours:?}");
+            assert_eq!(seen.status, "unknown");
+        }
+    }
     // What the later revisions are, in the validator's own words: form fill and signatures only,
     // plus the document's modification date that every edited revision updates.
     for i in infos(&last.bytes).iter().filter(|i| i.signed && i.field != seal_field(RID)) {
@@ -249,6 +258,26 @@ fn final_seal_locks() {
     assert_eq!(s.modification, "disallowed", "nothing may change after the final seal: {s:?}");
     let seal_info = infos(&sealed).into_iter().find(|i| i.field == seal_field(RID)).expect("seal");
     assert_eq!(seal_info.locks_document, Some(1), "P1's whole-document lock");
+
+    // The lock's /P 1 judges every change, not only the fields FieldMDP names: a comment and a
+    // page added afterwards are refused too.
+    let edited = |edit: Edit| {
+        let mut s = Session::new().with_clock(|| 1_795_500_000);
+        let id = s.open("x.pdf", None, Arc::new(sealed.clone()), None).expect("opens");
+        s.apply(id, edit).expect("edits");
+        let out = s.save_bytes(id).expect("saves").to_vec();
+        assert!(out.starts_with(&sealed), "saved incrementally");
+        out
+    };
+    let shape = Shape::Note { at: [100.0, 700.0], icon: NoteIcon::Comment };
+    let style = Style::default_for(&shape);
+    let commented = edited(Edit::AddAnnotation(NewAnnotation { page: 0, style, shape, contents: "Later".into(), author: "Eve".into() }));
+    let paged = edited(Edit::InsertBlankPage { at: 1, width: 612.0, height: 792.0 });
+    for (what, bytes) in [("a comment", commented), ("a page", paged)] {
+        let report = inspect(&bytes).expect("inspects");
+        let s = report.signatures.iter().find(|s| s.field == seal_field(RID)).expect("the seal");
+        assert_eq!(s.modification, "disallowed", "{what} after the final seal: {s:?}");
+    }
 }
 
 #[test]
@@ -281,12 +310,37 @@ fn with_tsa_each_signature_is_timestamped() {
 #[test]
 fn tsa_error_fails_without_output() {
     let err = seal_one(&prepared(), 1, false, Some(&DownTsa)).expect_err("no timestamp, no seal");
-    assert!(matches!(err, EsignError::Sign(_)), "{err:?}");
-    assert_eq!(err.to_string(), "The PDF could not be signed.", "no inner text on the wire");
+    assert!(matches!(err, EsignError::TsaUnavailable), "{err:?}");
+    assert_eq!(err.code(), "tsa_unavailable", "the worker answers 503, so the host retries");
+    assert_eq!(err.to_string(), "The timestamp service did not answer; nothing was signed. Try again.", "no inner text on the wire");
     // The final seal's timestamp failing fails the whole call too.
     let two = all_three(None)[1].1.bytes.clone();
     let err = seal_one(&two, 3, true, Some(&DownTsa)).expect_err("refused");
-    assert!(matches!(err, EsignError::Sign(_)), "{err:?}");
+    assert!(matches!(err, EsignError::TsaUnavailable), "{err:?}");
+}
+
+/// The final seal locks the document, so it is refused while a signer's field is still empty:
+/// sealed early, that signer could never sign.
+#[test]
+fn final_seal_refuses_while_a_signer_has_not_signed() {
+    let err = seal_one(&prepared(), 1, true, None).expect_err("two signers have not signed");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("Not every signer has signed"), "{err}");
+    // With the other two signed, the same call on the third goes through (all_three).
+    let two = all_three(None)[1].1.bytes.clone();
+    assert!(seal_one(&two, 3, true, None).is_ok());
+}
+
+#[test]
+fn a_final_seal_dated_before_the_signer_is_refused() {
+    let two = all_three(None)[1].1.bytes.clone();
+    let (uid, name) = SIGNERS[2];
+    let graphic = mark(name);
+    let text = row_text(3);
+    let signer = SignerSeal { request_id: RID, position: 3, uid, display_name: name, graphic: &graphic, row_text: &text, date: DATES[2] };
+    let early = FinalSeal { date: "2026-11-23T11:59:59Z", ..final_seal() };
+    let err = seal(&two, &id(), &signer, Some(&early), None).expect_err("the seal would predate the approval it closes");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
 }
 
 #[test]

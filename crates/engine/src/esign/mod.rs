@@ -33,6 +33,10 @@ pub enum EsignError {
     NoField(String),
     #[error("{0}")]
     Validation(String),
+    /// The timestamp authority could not be reached or refused to answer; nothing was signed, and
+    /// the same call may succeed later.
+    #[error("The timestamp service did not answer; nothing was signed. Try again.")]
+    TsaUnavailable,
     // A fixed sentence: the inner text can hold paths or library detail, so it stays off the wire.
     #[error("The PDF could not be signed.")]
     Sign(#[from] pdfcraft_sign::SignError),
@@ -42,7 +46,8 @@ pub enum EsignError {
 
 impl EsignError {
     /// The code the seal worker puts in `{ "error": … }`. A signing or editing failure inside a
-    /// step is the worker refusing the PDF it was given, so it shares `validation_failed`.
+    /// step is the worker refusing the PDF it was given, so it shares `validation_failed`; an
+    /// unreachable timestamp authority is `tsa_unavailable` (503: try again).
     pub fn code(&self) -> &'static str {
         match self {
             EsignError::BadGraphic(_) => "bad_graphic",
@@ -51,6 +56,7 @@ impl EsignError {
             EsignError::NeedsPassword => "needs_password",
             EsignError::NotPdf(_) => "not_pdf",
             EsignError::NoField(_) => "no_field",
+            EsignError::TsaUnavailable => "tsa_unavailable",
             EsignError::Validation(_) | EsignError::Sign(_) | EsignError::Edit(_) => "validation_failed",
         }
     }

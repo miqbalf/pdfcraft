@@ -346,6 +346,8 @@ fn prepare_refuses_usage_rights_certified_and_xfa_documents() {
 #[test]
 fn prepare_caps_the_signers() {
     let many = |n: u32| (1..=n).map(|p| slot(p, "u", "U", None)).collect::<Vec<_>>();
+    let at_cap = prepare(&blank(1), &header(), &many(MAX_SIGNERS as u32), DATE).expect("exactly the cap is accepted");
+    assert_eq!(at_cap.fields.len(), MAX_SIGNERS);
     let err = prepare(&blank(1), &header(), &many(MAX_SIGNERS as u32 + 1), DATE).expect_err("over the cap");
     assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
     assert!(err.to_string().contains(&MAX_SIGNERS.to_string()), "{err}");
