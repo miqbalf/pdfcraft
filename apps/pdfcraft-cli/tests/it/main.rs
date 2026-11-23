@@ -18,6 +18,7 @@ mod render;
 mod root_arguments;
 mod run_report;
 mod run_root;
+mod seal_worker;
 mod split;
 mod stderr;
 mod stdout;

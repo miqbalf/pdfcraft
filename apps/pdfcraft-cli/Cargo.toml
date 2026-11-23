@@ -22,6 +22,16 @@ pdfcraft-preflight = { workspace = true }
 pdfcraft-automation = { workspace = true }
 pdfcraft-platform = { workspace = true }
 base64 = "0.23"
+# seal-worker. All already in Cargo.lock: httparse 1.10.1 (through hyper and ureq-proto), ureq
+# 3.5.0 (craft-update, with these features), hmac 0.13.0, sha2 0.11.1, zeroize and chrono (pdfcraft-sign);
+# licences MIT or MIT OR Apache-2.0 (rule 26).
+pdfcraft-sign = { workspace = true }
+chrono = { workspace = true }
+zeroize = { workspace = true }
+httparse = "1.10"
+hmac = "0.13"
+sha2 = "0.11"
+ureq = { version = "3.5", default-features = false, features = ["rustls-no-provider", "_ring", "platform-verifier"] }
 
 [dev-dependencies]
 # Decodes `render` output in tests/it/owner_password.rs.

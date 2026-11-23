@@ -5027,7 +5027,10 @@ name = "pdfcraft-cli"
 version = "0.21.1"
 dependencies = [
  "base64 0.23.1",
+ "chrono",
  "craft-image-codecs",
+ "hmac",
+ "httparse",
  "pdfcraft-audit",
  "pdfcraft-automation",
  "pdfcraft-cos",
@@ -5035,9 +5038,13 @@ dependencies = [
  "pdfcraft-platform",
  "pdfcraft-preflight",
  "pdfcraft-render",
+ "pdfcraft-sign",
  "rustix 1.1.6",
  "serde_json",
+ "sha2 0.11.1",
+ "ureq",
  "winresource",
+ "zeroize",
 ]
 
 [[package]]

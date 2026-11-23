@@ -1,0 +1,495 @@
+//! `pdfcraft-cli seal-worker`: the e-sign sealing service, driven over raw HTTP on loopback.
+//!
+//! Each test starts its own worker on `127.0.0.1:0` with the test chain (`crates/sign/tests/data/chain.p12`)
+//! and reads the port it bound from `--port-file`.
+
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use base64::Engine as _;
+use hmac::{Hmac, KeyInit, Mac};
+use pdfcraft_engine::Session;
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+
+const BIN: &str = env!("CARGO_BIN_EXE_pdfcraft-cli");
+const SECRET: &str = "worker-test-secret-0123456789abcdef";
+const OWNER_REFUSAL: &str = "This PDF is already signed; a new signature would break it";
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn sha(b: &[u8]) -> String {
+    hex(&Sha256::digest(b))
+}
+
+fn hmac(text: &str) -> String {
+    let mut m = Hmac::<Sha256>::new_from_slice(SECRET.as_bytes()).expect("key");
+    m.update(text.as_bytes());
+    hex(&m.finalize().into_bytes())
+}
+
+fn b64(b: &[u8]) -> String {
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+fn unb64(v: &Value) -> Vec<u8> {
+    base64::engine::general_purpose::STANDARD.decode(v.as_str().expect("base64 text")).expect("base64")
+}
+
+fn now() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_secs() as i64
+}
+
+static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A fresh nonce: 32 lowercase hex.
+fn nonce() -> String {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos();
+    sha(format!("{}-{n}-{nanos}", std::process::id()).as_bytes())[..32].to_string()
+}
+
+/// A directory of its own for one worker.
+fn workdir(name: &str) -> PathBuf {
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("seal-worker-{name}-{}-{n}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    dir
+}
+
+#[cfg(unix)]
+fn chmod(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("chmod");
+}
+
+/// The key, its password and the HMAC secret in `dir`, each readable by this user only.
+fn secrets(dir: &Path, password: &str) {
+    let p12 = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/sign/tests/data/chain.p12")).expect("chain.p12");
+    std::fs::write(dir.join("seal.p12"), p12).expect("key");
+    std::fs::write(dir.join("seal_password"), format!("{password}\n")).expect("password");
+    std::fs::write(dir.join("seal_hmac"), format!("{SECRET}\n")).expect("secret");
+    #[cfg(unix)]
+    for f in ["seal.p12", "seal_password", "seal_hmac"] {
+        chmod(&dir.join(f), 0o600);
+    }
+}
+
+fn command(dir: &Path, extra: &[&str]) -> Command {
+    let mut c = Command::new(BIN);
+    c.arg("seal-worker").arg("--listen").arg("127.0.0.1:0");
+    c.arg("--key-file").arg(dir.join("seal.p12"));
+    c.arg("--key-password-file").arg(dir.join("seal_password"));
+    c.arg("--secret-file").arg(dir.join("seal_hmac"));
+    c.arg("--port-file").arg(dir.join("port"));
+    c.args(extra);
+    c.stdin(Stdio::null()).stdout(Stdio::null());
+    c.stderr(std::fs::File::create(dir.join("stderr.log")).expect("log"));
+    c
+}
+
+struct Worker {
+    child: Child,
+    port: u16,
+    dir: PathBuf,
+}
+
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+struct Reply {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Reply {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str())
+    }
+
+    fn json(&self) -> Value {
+        serde_json::from_slice(&self.body).expect("a JSON reply")
+    }
+}
+
+/// What a request sent, for the reply MAC and the log check.
+struct Sent {
+    mac: String,
+    nonce: String,
+}
+
+fn start_in(dir: &Path, extra: &[&str]) -> Worker {
+    let child = command(dir, extra).spawn().expect("starts");
+    let mut worker = Worker { child, port: 0, dir: dir.to_path_buf() };
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        if let Some(port) = std::fs::read_to_string(dir.join("port")).ok().and_then(|p| p.trim().parse().ok()) {
+            worker.port = port;
+            return worker;
+        }
+        if let Ok(Some(status)) = worker.child.try_wait() {
+            panic!("the worker exited ({status}): {}", std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default());
+        }
+        assert!(Instant::now() < deadline, "the worker did not start");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+fn start(name: &str, extra: &[&str]) -> Worker {
+    let dir = workdir(name);
+    secrets(&dir, "test");
+    start_in(&dir, extra)
+}
+
+impl Worker {
+    /// Send raw bytes; the whole reply (the worker closes the connection).
+    fn raw(&self, request: &[u8]) -> Reply {
+        let mut s = TcpStream::connect(("127.0.0.1", self.port)).expect("connects");
+        s.set_read_timeout(Some(Duration::from_secs(120))).expect("timeout");
+        s.write_all(request).expect("sends");
+        let mut out = Vec::new();
+        s.read_to_end(&mut out).expect("reads");
+        let end = out.windows(4).position(|w| w == b"\r\n\r\n").expect("a reply head") + 4;
+        let head = String::from_utf8_lossy(&out[..end]).to_string();
+        let mut lines = head.split("\r\n");
+        let status = lines.next().and_then(|l| l.split(' ').nth(1)).and_then(|c| c.parse().ok()).expect("status");
+        let headers = lines.filter_map(|l| l.split_once(':')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).collect();
+        Reply { status, headers, body: out[end..].to_vec() }
+    }
+
+    /// A request with the given time and nonce, signed with `secret`'s MAC unless `mac` is given.
+    fn send(&self, method: &str, path: &str, body: &[u8], time: i64, nonce: &str, mac: Option<&str>) -> (Reply, Sent) {
+        let good = hmac(&format!("{method}\n{path}\n{}\n{time}\n{nonce}", sha(body)));
+        let mac = mac.map(str::to_string).unwrap_or(good);
+        let mut req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {time}\r\nX-Craft-Seal-Nonce: {nonce}\r\nX-Craft-Seal-Mac: {mac}\r\n"
+        );
+        if method == "POST" {
+            req.push_str(&format!("Content-Type: application/json\r\nContent-Length: {}\r\n", body.len()));
+        }
+        req.push_str("\r\n");
+        let mut bytes = req.into_bytes();
+        bytes.extend_from_slice(body);
+        (self.raw(&bytes), Sent { mac, nonce: nonce.to_string() })
+    }
+
+    fn get(&self, path: &str) -> Reply {
+        self.send("GET", path, b"", now(), &nonce(), None).0
+    }
+
+    fn post(&self, path: &str, body: &Value) -> Reply {
+        self.send("POST", path, serde_json::to_string(body).expect("json").as_bytes(), now(), &nonce(), None).0
+    }
+
+    fn stderr(&self) -> String {
+        std::fs::read_to_string(self.dir.join("stderr.log")).unwrap_or_default()
+    }
+}
+
+fn blank() -> Vec<u8> {
+    Session::new().with_clock(|| 1_700_000_000).create_blank(612.0, 792.0, 1).expect("blank").to_vec()
+}
+
+const RID: u64 = 7;
+
+fn prepare_body(pdf: &[u8]) -> Value {
+    json!({
+        "pdf": b64(pdf),
+        "request_id": RID,
+        "header": {
+            "title": "Contract", "requester_uid": "alice", "requester_name": "Alice Doe",
+            "created_utc": "2026-11-24T08:00:00Z", "instance": "workspace.treeo.id", "organisation": "PT Solusi Hutan Digital",
+        },
+        "signers": [
+            { "position": 1, "uid": "bob", "display_name": "Bob Brown", "placement": null },
+            { "position": 2, "uid": "carol", "display_name": "Carol Chan", "placement": { "page": 0, "rect": [100, 100, 280, 140] } },
+        ],
+        "date": "2026-11-24T08:00:00Z",
+    })
+}
+
+fn seal_body(pdf: &[u8], position: u32, last: bool, tsa_url: Option<&str>, graphic: Value) -> Value {
+    let (uid, name) = if position == 1 { ("bob", "Bob Brown") } else { ("carol", "Carol Chan") };
+    json!({
+        "pdf": b64(pdf),
+        "request_id": RID,
+        "signer": { "position": position, "uid": uid, "display_name": name },
+        "graphic": graphic,
+        "row_text": format!("{name} ({uid}) signed"),
+        "date": format!("2026-11-24T09:0{position}:00Z"),
+        "tsa_url": tsa_url,
+        "final": if last { json!({ "completed_text": "Completed; 2 signers", "date": "2026-11-24T09:05:00Z" }) } else { Value::Null },
+    })
+}
+
+fn prepared(w: &Worker) -> Vec<u8> {
+    let r = w.post("/v1/prepare", &prepare_body(&blank()));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    unb64(&r.json()["pdf"])
+}
+
+#[test]
+fn health_reports_subject_fingerprint_and_expiry() {
+    let w = start("health", &[]);
+    let r = w.get("/v1/health");
+    assert_eq!(r.status, 200);
+    let h = r.json();
+    assert_eq!(h["ok"], true);
+    let p12 = std::fs::read(w.dir.join("seal.p12")).expect("key");
+    let id = pdfcraft_engine::sign::pkcs12::open(&p12, "test").expect("opens");
+    assert_eq!(h["cert"]["sha256"], sha(&id.certificate.raw));
+    assert_eq!(h["cert"]["subject"], id.certificate.subject.display());
+    assert_eq!(h["cert"]["issuer"], id.certificate.issuer.display());
+    let t = id.certificate.not_after;
+    let not_after = h["cert"]["not_after"].as_str().expect("text");
+    assert!(not_after.starts_with(&format!("{:04}-{:02}-{:02}T", t.year, t.month, t.day)) && not_after.ends_with('Z'), "{not_after}");
+    let chain = h["cert"]["chain_pem"].as_array().expect("chain");
+    let leaf = pdfcraft_engine::sign::x509::load_certificates(chain[0].as_str().expect("pem").as_bytes()).expect("pem");
+    assert_eq!(leaf[0], id.certificate, "the chain starts with the sealing certificate");
+    let root = pdfcraft_engine::sign::x509::load_certificates(h["root_pem"].as_str().expect("root").as_bytes()).expect("pem");
+    assert!(root[0].is_self_signed(), "the root is a self-signed CA certificate");
+    assert_eq!(chain.last(), Some(&h["root_pem"]), "the chain ends at the root");
+}
+
+#[test]
+fn bad_mac_is_401() {
+    let w = start("badmac", &[]);
+    let (r, _) = w.send("GET", "/v1/health", b"", now(), &nonce(), Some(&"0".repeat(64)));
+    assert_eq!(r.status, 401);
+    // The MAC of another body does not do either.
+    let other = hmac(&format!("GET\n/v1/health\n{}\n{}\n{}", sha(b"x"), now(), "a".repeat(32)));
+    let (r, _) = w.send("GET", "/v1/health", b"", now(), &"a".repeat(32), Some(&other));
+    assert_eq!(r.status, 401);
+    assert_eq!(w.get("/v1/health").status, 200, "the right MAC passes");
+}
+
+#[test]
+fn stale_time_is_401() {
+    let w = start("stale", &[]);
+    assert_eq!(w.send("GET", "/v1/health", b"", now() - 90, &nonce(), None).0.status, 401);
+    assert_eq!(w.send("GET", "/v1/health", b"", now() + 90, &nonce(), None).0.status, 401);
+    assert_eq!(w.send("GET", "/v1/health", b"", now() - 30, &nonce(), None).0.status, 200, "well inside the 60 s window");
+}
+
+#[test]
+fn reused_nonce_is_401() {
+    let w = start("nonce", &[]);
+    let n = nonce();
+    assert_eq!(w.send("GET", "/v1/health", b"", now(), &n, None).0.status, 200);
+    assert_eq!(w.send("GET", "/v1/health", b"", now(), &n, None).0.status, 401);
+}
+
+#[test]
+fn reply_mac_matches_request_mac_and_body() {
+    let w = start("replymac", &[]);
+    let (r, sent) = w.send("GET", "/v1/health", b"", now(), &nonce(), None);
+    let want = hmac(&format!("reply\n{}\n{}", sent.mac, sha(&r.body)));
+    assert_eq!(r.header("X-Craft-Seal-Reply"), Some(want.as_str()));
+    // A refusal carries one too, over its own body.
+    let body = br#"{"pdf":"not base64!"}"#;
+    let (r, sent) = w.send("POST", "/v1/inspect", body, now(), &nonce(), None);
+    assert_eq!(r.status, 400);
+    assert_eq!(r.header("X-Craft-Seal-Reply"), Some(hmac(&format!("reply\n{}\n{}", sent.mac, sha(&r.body))).as_str()));
+    assert_ne!(r.json(), json!({}), "never an empty object");
+}
+
+#[test]
+fn oversize_body_is_413() {
+    let w = start("oversize", &[]);
+    let n = nonce();
+    let mac = "0".repeat(64);
+    let head = format!(
+        "POST /v1/inspect HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {}\r\nX-Craft-Seal-Nonce: {n}\r\nX-Craft-Seal-Mac: {mac}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        now(),
+        96 * 1024 * 1024 + 1
+    );
+    let r = w.raw(head.as_bytes());
+    assert_eq!(r.status, 413, "refused from the length alone, before the body");
+    assert_eq!(r.header("X-Craft-Seal-Reply"), Some(hmac(&format!("reply\n{mac}\n{}", sha(&r.body))).as_str()));
+}
+
+#[test]
+fn prepare_then_seal_round_trip_valid() {
+    let w = start("roundtrip", &[]);
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" })));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let first = r.json();
+    let one = unb64(&first["pdf"]);
+    assert!(one.starts_with(&base), "an incremental update");
+    assert_eq!(first["sha256"], sha(&one));
+    assert_eq!(first["after_signer_sha256"], first["sha256"], "no final seal: one revision");
+    assert_eq!(first["timestamped"], false, "tsa_url null: B-B");
+
+    let strokes = json!({ "kind": "strokes", "strokes": [[[0.1, 0.2], [0.5, 0.6], [0.9, 0.3]]] });
+    let r = w.post("/v1/seal", &seal_body(&one, 2, true, None, strokes));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    let last = r.json();
+    let two = unb64(&last["pdf"]);
+    assert!(two.starts_with(&one));
+    assert_eq!(last["sha256"], sha(&two));
+    assert_ne!(last["after_signer_sha256"], last["sha256"], "the final seal is a revision of its own");
+    let signed: Vec<&Value> = last["signatures"].as_array().expect("list").iter().filter(|s| s["signed"] == true).collect();
+    assert_eq!(signed.len(), 3, "two signers and the seal");
+    assert!(signed.iter().all(|s| s["status"] == "valid" && s["modification"] != "disallowed"), "{signed:?}");
+
+    // inspect checks against the same root, so it says the same.
+    let r = w.post("/v1/inspect", &json!({ "pdf": b64(&two) }));
+    assert_eq!(r.status, 200);
+    let i = r.json();
+    assert_eq!(i["sha256"], last["sha256"]);
+    assert_eq!(i["signatures"], last["signatures"]);
+    assert_eq!(i["signed"], true);
+    let health = w.get("/v1/health").json();
+    assert_eq!(i["root_pem"], health["root_pem"]);
+}
+
+#[test]
+fn already_signed_is_422_with_owner_wording() {
+    let w = start("signed", &[]);
+    let signed = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../crates/sign/tests/data/openssl-signed.pdf")).expect("fixture");
+    let r = w.post("/v1/prepare", &prepare_body(&signed));
+    assert_eq!(r.status, 422);
+    assert_eq!(r.json(), json!({ "error": "already_signed", "message": OWNER_REFUSAL }));
+}
+
+#[test]
+fn graphic_over_caps_is_400() {
+    let w = start("caps", &[]);
+    let base = prepared(&w);
+    let stroke = json!([[0.1, 0.1], [0.2, 0.2]]);
+    let too_many = json!({ "kind": "strokes", "strokes": vec![stroke; 65] });
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, None, too_many));
+    assert_eq!(r.status, 400);
+    let e = r.json();
+    assert_eq!(e["error"], "graphic_too_large");
+    assert!(e.get("pdf").is_none(), "nothing written");
+    let nan = w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "strokes", "strokes": [[[0.1, "NaN"]]] })));
+    assert_eq!(nan.status, 400, "{}", String::from_utf8_lossy(&nan.body));
+}
+
+#[test]
+fn tsa_unreachable_is_503_and_writes_nothing() {
+    let w = start("tsadown", &[]);
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("https://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
+    assert_eq!(r.status, 503);
+    let e = r.json();
+    assert_eq!(e["error"], "tsa_unavailable");
+    assert_eq!(e["message"], "The timestamp service did not answer; nothing was signed. Try again.");
+    assert!(e.get("pdf").is_none());
+    // The same bytes can be sealed afterwards: the field was not used up.
+    assert_eq!(w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" }))).status, 200);
+}
+
+#[test]
+fn dev_tsa_marks_timestamped() {
+    let w = start("devtsa", &["--insecure-dev-tsa"]);
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("https://freetsa.org/tsr"), json!({ "kind": "name" })));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["timestamped"], true);
+    let plain = w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" })));
+    assert_eq!(plain.json()["timestamped"], false, "tsa_url null stays B-B");
+}
+
+#[test]
+fn http_tsa_refused_without_insecure_dev() {
+    let w = start("httptsa", &[]);
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("http://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
+    assert_eq!(r.status, 400);
+    assert_eq!(r.json()["error"], "bad_tsa_url");
+    // A development worker takes it, and finds nobody there.
+    let dev = start("httptsa-dev", &["--insecure-dev"]);
+    let base = prepared(&dev);
+    let r = dev.post("/v1/seal", &seal_body(&base, 1, false, Some("http://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
+    assert_eq!(r.status, 503);
+    assert_eq!(r.json()["error"], "tsa_unavailable");
+}
+
+#[cfg(unix)]
+#[test]
+fn world_readable_key_refuses_to_start() {
+    for file in ["seal.p12", "seal_password", "seal_hmac"] {
+        let dir = workdir("readable");
+        secrets(&dir, "test");
+        chmod(&dir.join(file), 0o644);
+        let mut child = command(&dir, &[]).spawn().expect("spawns");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            if let Some(s) = child.try_wait().expect("waits") {
+                break s;
+            }
+            if Instant::now() > deadline {
+                let _ = child.kill();
+                panic!("{file}: the worker started with a readable file");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        assert!(!status.success(), "{file}");
+        assert!(!dir.join("port").exists(), "{file}: it never listened");
+        assert!(std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default().contains("group or others"), "{file}: says why");
+        // --insecure-dev lets it start.
+        let w = start_in(&dir, &["--insecure-dev"]);
+        assert_eq!(w.get("/v1/health").status, 200);
+    }
+}
+
+#[test]
+fn key_not_loaded_is_503() {
+    let dir = workdir("nokey");
+    secrets(&dir, "not-the-password");
+    let w = start_in(&dir, &[]);
+    let h = w.get("/v1/health");
+    assert_eq!(h.status, 200);
+    assert_eq!(h.json()["ok"], false);
+    // Prepare does not need the key; sealing does.
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" })));
+    assert_eq!(r.status, 503);
+    assert_eq!(r.json()["error"], "key_not_loaded");
+}
+
+#[test]
+fn logs_never_contain_pdf_or_mac() {
+    let w = start("logs", &[]);
+    let mut sent = Vec::new();
+    let mut call = |method: &str, path: &str, body: &Value| {
+        let bytes = if method == "GET" { Vec::new() } else { serde_json::to_vec(body).expect("json") };
+        let (r, s) = w.send(method, path, &bytes, now(), &nonce(), None);
+        sent.push(s);
+        r
+    };
+    let p = call("POST", "/v1/prepare", &prepare_body(&blank()));
+    let base = unb64(&p.json()["pdf"]);
+    call("POST", "/v1/inspect", &json!({ "pdf": b64(&base) }));
+    call("POST", "/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" })));
+    call("GET", "/v1/health", &Value::Null);
+    let (_, bad) = w.send("GET", "/v1/health", b"", now(), &nonce(), Some(&"f".repeat(64)));
+    sent.push(bad);
+    let log = w.stderr();
+    assert!(log.lines().filter(|l| l.contains("/v1/")).count() >= 5, "one line per call:\n{log}");
+    let mut run = 0usize;
+    for c in log.chars() {
+        run = if c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=') { run + 1 } else { 0 };
+        assert!(run <= 64, "a base64-like run of more than 64 characters in the log:\n{log}");
+    }
+    for s in &sent {
+        assert!(!log.contains(&s.mac), "a request MAC in the log");
+        assert!(!log.contains(&s.nonce), "a nonce in the log");
+    }
+    assert!(!log.contains(SECRET));
+}

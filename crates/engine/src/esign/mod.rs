@@ -11,7 +11,7 @@ mod seal;
 
 pub use audit_page::audit_document;
 pub use graphic::{MAX_PNG_BYTES, MAX_PNG_SIDE, MAX_STROKE_POINTS, MAX_STROKES, MAX_TYPED_CHARS, graphic_from_json, graphic_to_json};
-pub use inspect::{Inspection, SignatureSummary, inspect};
+pub use inspect::{Inspection, SignatureSummary, inspect, inspect_trusting};
 pub use prepare::{AuditHeader, MAX_SIGNERS, Placement, Prepared, SignerSlot, completed_field, prepare, row_field, seal_field, signer_field};
 pub use seal::{FinalSeal, Sealed, SignerSeal, seal};
 

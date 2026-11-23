@@ -101,14 +101,25 @@ pub(super) fn open(bytes: &[u8], now: i64) -> Result<Opened, EsignError> {
     }
 }
 
-/// Report on `bytes`. A signed or encrypted PDF is reported, never refused.
+/// Report on `bytes`. A signed or encrypted PDF is reported, never refused. Trusting nothing, a
+/// sound signature reads `unknown`; [`inspect_trusting`] gives the seal worker's view.
 pub fn inspect(bytes: &[u8]) -> Result<Inspection, EsignError> {
+    inspect_trusting(bytes, &[])
+}
+
+/// [`inspect`], with `trust` as the trusted roots: the seal worker passes its own root, so the
+/// signatures it made read `valid` here as they do in the seal's reply.
+pub fn inspect_trusting(bytes: &[u8], trust: &[pdfcraft_sign::Certificate]) -> Result<Inspection, EsignError> {
     let sha256 = sha256_hex(bytes);
-    let (session, id) = match open(bytes, 0)? {
-        Opened::Doc(session, id) => (session, id),
-        Opened::NeedsPassword => {
+    let mut session = Session::new();
+    session.set_javascript(false);
+    session.set_trusted_certificates(trust.to_vec());
+    let id = match session.open("document.pdf", None, Arc::new(bytes.to_vec()), None) {
+        Ok(id) => id,
+        Err(OpenError::NeedsPassword | OpenError::WrongPassword) => {
             return Ok(Inspection { sha256, pages: 0, signed: false, needs_password: true, signatures: Vec::new() });
         }
+        Err(OpenError::Invalid(_) | OpenError::Unsupported(_)) => return Err(EsignError::NotPdf("This file is not a PDF that can be read.".into())),
     };
     let doc = session.get(id).ok_or_else(|| EsignError::NotPdf("This file is not a PDF that can be read.".into()))?;
     Ok(Inspection {

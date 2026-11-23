@@ -3,7 +3,7 @@
 //!
 //! Each signer gets one revision: their audit row filled in and an approval signature on their
 //! field, made with the instance's digital ID and showing their mark. After the last signer a
-//! second revision fills the Completed line, makes every form field but the signature fields
+//! second revision fills the Completed line, makes every form field but the signed signature fields
 //! read-only (ISO 32000-2 §12.7.4.1, field flag ReadOnly, bit 1) and signs the seal field with a lock on the whole
 //! document (`/Lock << /Action /All /P 1 >>` and a FieldMDP reference, P1's lock). Every
 //! revision is appended to the bytes given, and checked before it is returned.
@@ -233,6 +233,20 @@ pub fn seal(
     let field = signer_field(rid, signer.position);
     let row = row_field(rid, signer.position);
     let (session, doc) = open_for(bytes, now, &field, Some(&row))?;
+    // The final seal locks the document: a signer whose field is still empty could never sign.
+    // Checked before anything is signed, so a refused call costs no signature.
+    if last.is_some() {
+        let signer_prefix = format!("CraftOffice.R{rid}.S");
+        let waiting = session.get(doc).is_some_and(|d| {
+            d.signatures.iter().any(|s| {
+                let is_signer = s.field.strip_prefix(&signer_prefix).is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()));
+                is_signer && s.field != field && !s.signed
+            })
+        });
+        if waiting {
+            return Err(EsignError::Validation("Not every signer has signed yet, so the document was not sealed.".into()));
+        }
+    }
     let opts = SignOptions {
         field: Some(field.clone()),
         reason: Some(signer_reason(signer.display_name, signer.uid)),
@@ -249,30 +263,19 @@ pub fn seal(
         let seal = seal_field(rid);
         let completed = completed_field(rid);
         let (session, doc) = open_for(&after_signer, final_now, &seal, Some(&completed))?;
-        // The final seal locks the document: a signer whose field is still empty could never sign.
-        let signer_prefix = format!("CraftOffice.R{rid}.S");
-        let waiting = session.get(doc).is_some_and(|d| {
-            d.signatures.iter().any(|s| {
-                let is_signer = s.field.strip_prefix(&signer_prefix).is_some_and(|n| !n.is_empty() && n.bytes().all(|c| c.is_ascii_digit()));
-                is_signer && !s.signed
-            })
-        });
-        if waiting {
-            return Err(EsignError::Validation("Not every signer has signed yet, so the document was not sealed.".into()));
-        }
         let mut edits: Vec<Edit> = fill_read_only(&completed, f.completed_text).into();
-        let cos = session
-            .get(doc)
-            .and_then(|d| d.editor.as_ref())
-            .map(|e| &e.cos)
-            .ok_or_else(|| EsignError::Validation("This PDF can be read but not changed.".into()))?;
+        let opened = session.get(doc).ok_or_else(|| EsignError::Validation("This PDF can be read but not changed.".into()))?;
+        let cos = opened.editor.as_ref().map(|e| &e.cos).ok_or_else(|| EsignError::Validation("This PDF can be read but not changed.".into()))?;
+        let signed: std::collections::BTreeSet<&str> = opened.signatures.iter().filter(|s| s.signed).map(|s| s.field.as_str()).collect();
         // Every terminal field but the seal's own; Completed is locked again by its fill. A
-        // signature field is left alone: a signed one cannot take another value, the seal's lock
+        // signed signature field is left alone: it cannot take another value, the seal's lock
         // covers it, and setting its flags redraws its look, which the signatures before would
-        // count as a change of page content.
+        // count as a change of page content. An unsigned one (the source PDF's own) is made
+        // read-only, so a viewer that ignores the lock does not offer it (P4 review m3).
         let names: std::collections::BTreeSet<String> = pdfcraft_forms::fields(cos)
             .into_iter()
-            .filter(|x| x.name != seal && x.name != completed && x.kind != pdfcraft_forms::FieldKind::Signature && !x.read_only())
+            .filter(|x| x.name != seal && x.name != completed && !x.read_only())
+            .filter(|x| x.kind != pdfcraft_forms::FieldKind::Signature || !signed.contains(x.name.as_str()))
             .map(|x| x.name)
             .collect();
         edits.extend(

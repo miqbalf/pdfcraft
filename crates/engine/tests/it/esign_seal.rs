@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use pdfcraft_cos::{PdfString, SaveOptions, write_incremental};
 use pdfcraft_engine::esign::{
-    AuditHeader, EsignError, FinalSeal, Placement, SignerSeal, SignerSlot, completed_field, graphic_from_json, inspect, prepare, row_field, seal,
-    seal_field, signer_field,
+    AuditHeader, EsignError, FinalSeal, Placement, SignerSeal, SignerSlot, completed_field, graphic_from_json, inspect, inspect_trusting, prepare,
+    row_field, seal, seal_field, signer_field,
 };
 use pdfcraft_engine::sign::der;
 use pdfcraft_engine::sign::timestamp::{TimestampIssuance, TimestampSigner, parse_request, respond};
@@ -436,4 +436,56 @@ fn a_bad_date_is_refused() {
         SignerSeal { request_id: RID, position: 1, uid: "bob", display_name: "Bob Brown", graphic: &graphic, row_text: "x", date: "23/11/2026" };
     let err = seal(&prepared(), &id(), &signer, None, None).expect_err("refused");
     assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+}
+
+/// With the seal's root trusted, as the worker does (P4 review concern 1), `inspect` agrees with
+/// the seal: the request's signatures read valid, not unknown.
+#[test]
+fn inspect_trusting_the_seal_root_agrees_with_the_seal() {
+    let steps = all_three(None);
+    let last = &steps[2].1;
+    let id = id();
+    let root = id.chain.last().cloned().unwrap_or_else(|| id.certificate.clone());
+    let report = inspect_trusting(&last.bytes, &[root]).expect("inspects");
+    assert_eq!(report.signatures, last.signatures, "the same verdicts as the seal's own check");
+    assert!(report.signatures.iter().filter(|s| s.signed).all(|s| s.status == "valid"), "{:?}", report.signatures);
+    assert_eq!(report.sha256, inspect(&last.bytes).expect("inspects").sha256);
+}
+
+/// A PDF with a signature field of its own, left unsigned, prepared for the three signers.
+fn prepared_with_own_signature_field() -> Vec<u8> {
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("x.pdf", None, Arc::new(form()), None).expect("opens");
+    let add = Edit::AddField { page: 0, rect: [320.0, 600.0, 500.0, 650.0], kind: NewField::Signature, name: Some("Witness".into()) };
+    s.apply(id, add).expect("adds");
+    let source = s.save_bytes(id).expect("saves").to_vec();
+    let slots: Vec<SignerSlot> = SIGNERS
+        .iter()
+        .enumerate()
+        .map(|(i, (uid, name))| SignerSlot { position: i as u32 + 1, uid: (*uid).into(), display_name: (*name).into(), placement: None })
+        .collect();
+    prepare(&source, &header(), &slots, PREPARED_AT).expect("prepares").bytes
+}
+
+/// P4 review m3: after the final seal, a viewer that ignores the seal's lock still offers no
+/// field to sign, the source PDF's own unsigned signature fields included; every signature stays
+/// sound.
+#[test]
+fn the_source_pdf_s_unsigned_signature_fields_are_read_only_after_final_seal() {
+    let mut bytes = prepared_with_own_signature_field();
+    let own = |b: &[u8]| fields(b).into_iter().find(|f| f.name == "Witness").expect("the PDF's own signature field");
+    assert!(!own(&bytes).read_only(), "before the request ends it can be signed");
+    let mut last = None;
+    for p in 1..=3 {
+        let out = seal_one(&bytes, p, p == 3, None).expect("seals");
+        bytes = out.bytes.clone();
+        last = Some(out);
+    }
+    assert!(own(&bytes).read_only(), "read-only after the final seal");
+    let last = last.expect("sealed");
+    for s in last.signatures.iter().filter(|s| s.signed) {
+        assert_eq!(s.status, "valid", "{s:?}");
+        assert_ne!(s.modification, "disallowed", "{s:?}");
+    }
+    assert!(last.signatures.iter().any(|s| s.field == "Witness" && !s.signed), "still listed, still unsigned");
 }

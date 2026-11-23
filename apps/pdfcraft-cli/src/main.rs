@@ -57,6 +57,7 @@ mod check;
 mod commands;
 mod options;
 mod run;
+mod seal_worker;
 mod ui;
 
 use check::{audit, check, check_one};
@@ -94,6 +95,9 @@ pdfcraft-cli run    --script steps.json [--root DIR] [--report]
     "\
 pdfcraft-cli ui     --control FILE <method> [key=value …] [--out shot.png]
                                                            drive a running app started with --control FILE
+pdfcraft-cli seal-worker --listen 0.0.0.0:9560 --key-file seal.p12 --key-password-file PW_FILE --secret-file HMAC_FILE
+                      [--instance NAME] [--organisation NAME] [--insecure-dev] [--insecure-dev-tsa] [--port-file PATH]
+                                                           e-sign sealing service (HTTP, HMAC-authenticated); see seal_worker.rs
 help and feedback: https://discord.gg/artcraft"
 );
 
@@ -145,6 +149,7 @@ fn main() -> ExitCode {
         Some("run") => run(&args[1..]),
         Some("batch") => batch::run(&args[1..]),
         Some("ui") => ui(&args[1..]),
+        Some("seal-worker") => seal_worker::run(&args[1..]),
         #[cfg(feature = "mcp")]
         Some("mcp") => mcp(&args[1..]),
         #[cfg(not(feature = "mcp"))]
