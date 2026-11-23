@@ -281,3 +281,105 @@ fn sign_mode_opens_at_the_page_of_the_signers_field() {
     let (i, _) = app.active_ids().expect("a document");
     assert_eq!(app.views[i].current, 1, "the page the field is on, not the host's page 0");
 }
+
+/// The Signatures panel's Sign is another way to sign: in sign mode it never opens the digital
+/// signing dialog nor runs the field's scripts. Another signer's field does nothing; the signer's
+/// own opens the mark picker, as a click on the field does.
+#[test]
+fn signatures_panel_sign_is_read_only_in_sign_mode() {
+    let (mut app, posted) = in_sign_mode(SIGN_PAGE);
+    let (i, id) = app.active_ids().expect("a document");
+    let generation = app.session.get(id).expect("open").edit_generation();
+    let bytes = app.session.save_bytes(id).expect("bytes");
+
+    app.signatures_panel_sign(i, THEIRS.into());
+    assert!(app.dialog.is_none(), "another signer's field opens nothing");
+    assert!(app.sign_draft.is_none());
+    app.start_signing(0, None, Some(THEIRS.into()), None);
+    assert!(app.dialog.is_none(), "no other way into the digital signing dialog");
+    assert!(app.sign_draft.is_none());
+
+    app.signatures_panel_sign(i, MINE.into());
+    assert_eq!(app.dialog, Some(crate::Dialog::Signature), "his own field opens the mark picker");
+    assert!(app.esign.picking());
+    assert_eq!(app.session.get(id).expect("open").edit_generation(), generation);
+    assert_eq!(app.session.save_bytes(id).expect("bytes"), bytes, "the document is byte-identical");
+    assert!(posted.borrow().is_empty());
+}
+
+#[test]
+fn stop_placing_ends_request_mode_and_the_lock() {
+    let (mut app, posted) = in_request_mode(SIGN_PAGE);
+    let (_, id) = app.active_ids().expect("a document");
+    assert_eq!(app.place_signer_box(0, [20.0, 20.0, 120.0, 60.0]), Ok(1));
+    app.stop_request_mode();
+    assert!(!app.esign_locked(id), "the requester's document is hers again");
+    assert!(app.apply_edit(note()), "and takes edits");
+    assert!(posted.borrow().is_empty(), "nothing was sent");
+}
+
+#[test]
+fn send_ends_request_mode() {
+    let (mut app, posted) = in_request_mode(SIGN_PAGE);
+    let (_, id) = app.active_ids().expect("a document");
+    assert_eq!(app.place_signer_box(0, [20.0, 20.0, 120.0, 60.0]), Ok(1));
+    assert!(app.send_placements());
+    assert_eq!(posted.borrow().len(), 1);
+    assert!(!app.esign_locked(id), "request mode ends once the places went");
+    assert!(!app.send_placements(), "and Send can't post them again");
+    assert_eq!(posted.borrow().len(), 1);
+}
+
+#[test]
+fn send_with_no_boxes_posts_nothing() {
+    let (mut app, posted) = in_request_mode(SIGN_PAGE);
+    assert!(!app.send_placements());
+    assert!(posted.borrow().is_empty());
+}
+
+/// Sign mode binds to the document the host opened, never to another one shown meanwhile.
+#[test]
+fn sign_mode_binds_only_to_the_hosts_document() {
+    let (mut app, _) = app_with(SIGN_PAGE);
+    let host = app.host_doc.take().expect("the host's document");
+    app.open_bytes("mine.pdf", None, SIGN_PAGE.to_vec()).expect("opens");
+    let (_, other) = app.active_ids().expect("a document");
+    assert_ne!(other, host);
+    app.host_sign.push(sign_mode());
+    app.process_host_sign();
+    assert!(!app.esign_locked(other), "the document shown is not the host's");
+    app.host_doc = Some(host);
+    app.process_host_sign();
+    assert!(app.esign_locked(host), "bound once the host's document is known");
+    assert!(!app.esign_locked(other));
+}
+
+#[test]
+fn a_missing_signer_field_is_said() {
+    let (mut app, _) = app_with(SIGN_PAGE);
+    app.host_sign.push(SignHostEvent::SignMode {
+        request_id: 7,
+        field: "CraftOffice.R7.S9".into(),
+        page: 0,
+        others: Vec::new(),
+        banner: "Sign".into(),
+        trust_roots: Vec::new(),
+    });
+    app.process_host_sign();
+    let toast = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+    assert!(toast.contains("isn't in this document"), "{toast:?}");
+}
+
+#[test]
+fn a_failed_post_shows_a_fixed_sentence() {
+    let (mut app, _) = in_sign_mode(SIGN_PAGE);
+    app.host_sign_post = Some(Box::new(|_| Err("JsValue(TypeError: detail)".into())));
+    assert!(app.sign_field_clicked(MINE));
+    app.signature_draft.drawing = false;
+    app.signature_draft.image_mode = false;
+    app.signature_draft.text = "Ada Lovelace".into();
+    app.signature_pad_applied();
+    let toast = app.toast.as_ref().map(|(t, _)| t.clone()).unwrap_or_default();
+    assert!(toast.starts_with("Couldn't reach Nextcloud"), "{toast:?}");
+    assert!(!toast.contains("detail"), "no inner error text: {toast:?}");
+}

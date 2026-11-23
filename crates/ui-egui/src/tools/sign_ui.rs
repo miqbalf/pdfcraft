@@ -308,6 +308,10 @@ impl PdfCraftApp {
     /// Start signing: the rectangle (or field) is known; show Sign with a Digital ID, after a
     /// dynamic form's preSign scripts for the field.
     pub fn start_signing(&mut self, page: usize, rect: Option<[f64; 4]>, field: Option<String>, certify: Option<u8>) {
+        if self.esign_locks_active() {
+            self.notify_tr("This document is open for signing and can't be changed");
+            return;
+        }
         self.refresh_os_key_store_ids();
         let mut draft = SignDraft::new(page, rect, field.clone(), certify, &self.digital_ids);
         draft.graphic = match &self.sign_graphic {
@@ -331,6 +335,9 @@ impl PdfCraftApp {
 
     /// Run signature field `field`'s preSign scripts in document `doc` and keep the step pending.
     fn run_presign(&mut self, doc: pdfcraft_engine::DocId, field: &str) {
+        if self.esign_locked(doc) {
+            return;
+        }
         match self.session.run_sign_event(doc, field, pdfcraft_engine::js::SignEvent::Before) {
             Ok(true) => {
                 self.presign = self.session.get(doc).map(|d| (doc, d.undo_depth()));

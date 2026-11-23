@@ -214,7 +214,12 @@ mod tests {
             assert!(!HEARD.contains(&kind), "the app's own messages are never heard back");
         }
 
-        // Malformed sign-mode messages are dropped whole.
+        malformed_sign_mode_is_dropped();
+        request_mode_and_host_flag_are_checked();
+    }
+
+    /// Malformed sign-mode messages are dropped whole.
+    fn malformed_sign_mode_is_dropped() {
         let broken = |key: &str, value: Value| {
             let mut m = sign_mode();
             m[key] = value;
@@ -231,8 +236,10 @@ mod tests {
         assert_eq!(broken("banner", json!(null)), None);
         assert_eq!(broken("trustRoots", json!(vec!["pem"; MAX_ROOTS + 1])), None);
         assert_eq!(broken("trustRoots", json!(["x".repeat(MAX_ROOT_PEM + 1)])), None);
+    }
 
-        // Request mode: signers with distinct positions and names.
+    /// Request mode: signers with distinct positions and names; `sign` only when really true.
+    fn request_mode_and_host_flag_are_checked() {
         let request = |signers: Value| read("pdfcraft:sign-request-mode", &json!({ "signers": signers }));
         assert!(
             matches!(request(json!([{ "position": 1, "name": "Ann" }, { "position": 2, "name": "Bob" }])), Some(Heard::Event(SignHostEvent::RequestMode { signers })) if signers.len() == 2)

@@ -168,7 +168,7 @@ impl PdfCraftApp {
                 }
             }
         }
-        // The host's document, or the one shown while the host has opened none yet.
+        // Only the host's document: wait while it has opened none yet.
         let open = |app: &Self, id: DocId| app.views.iter().any(|v| v.id == id);
         if let Some(doc) = self.esign.doc()
             && !open(self, doc)
@@ -180,20 +180,23 @@ impl PdfCraftApp {
         if self.esign.mode.is_none() || self.esign.doc().is_some() {
             return;
         }
-        let Some(doc) = self.host_doc.filter(|d| open(self, *d)).or_else(|| self.active_ids().map(|(_, id)| id)) else { return };
+        let Some(doc) = self.host_doc.filter(|d| open(self, *d)) else { return };
         match &mut self.esign.mode {
             Some(Mode::Sign(s)) => {
                 s.doc = Some(doc);
                 // The field's own page in the form: the host says page 0 when the signer has no
                 // placement of his own, so its `page` is only the fallback.
-                let page = self
-                    .session
-                    .get(doc)
-                    .and_then(|d| d.form.iter().find(|f| f.name == s.field))
-                    .and_then(|f| f.widgets.iter().find_map(|w| w.page))
-                    .unwrap_or(s.page);
+                let field = self.session.get(doc).and_then(|d| d.form.iter().find(|f| f.name == s.field));
+                let page = field.and_then(|f| f.widgets.iter().find_map(|w| w.page)).unwrap_or(s.page);
+                let missing = field.is_none().then(|| s.field.clone());
                 if let Some(v) = self.views.iter_mut().find(|v| v.id == doc) {
                     v.go_to_page(page);
+                }
+                if let Some(name) = missing {
+                    self.notify_fmt(
+                        "Your signature field {field} isn't in this document. Close it and use Sign with my name in Nextcloud.",
+                        &[("field", &name)],
+                    );
                 }
             }
             Some(Mode::Request(r)) => r.doc = Some(doc),
@@ -324,7 +327,8 @@ impl PdfCraftApp {
         match self.host_sign_post.as_ref().map(|post| post(message)) {
             Some(Ok(())) => true,
             Some(Err(e)) => {
-                self.notify_fmt("Couldn't reach Nextcloud: {e}", &[("e", &e)]);
+                log::warn!("PdfCraft: a message to Nextcloud did not go: {e}");
+                self.notify_tr("Couldn't reach Nextcloud. Reload the page and try again.");
                 false
             }
             None => {
@@ -355,11 +359,39 @@ impl PdfCraftApp {
         }
     }
 
+    /// Stop placing boxes: request mode ends and the document can be edited again.
+    pub fn stop_request_mode(&mut self) {
+        if matches!(self.esign.mode, Some(Mode::Request(_))) {
+            self.esign.mode = None;
+        }
+    }
+
+    /// The Signatures panel's Sign on `field`, in the document of view `index`.
+    pub(crate) fn signatures_panel_sign(&mut self, index: usize, field: String) {
+        let Some(view) = self.views.get(index) else { return };
+        let (page, id) = (view.current, view.id);
+        if self.esign_locked(id) {
+            // In sign mode only the signer's own field takes a mark, through the picker.
+            self.sign_field_clicked(&field);
+            return;
+        }
+        self.start_signing(page, None, Some(field), None);
+    }
+
     /// Send: post the boxes to the host (`pdfcraft:sign-placements`). Returns whether it went.
     pub fn send_placements(&mut self) -> bool {
         let Some(Mode::Request(r)) = &self.esign.mode else { return false };
+        if r.boxes.is_empty() {
+            self.notify_tr("Draw a box for at least one signer first.");
+            return false;
+        }
         let placements: Vec<Value> = r.boxes.iter().map(|b| json!({ "position": b.position, "page": b.page, "rect": b.rect })).collect();
-        self.post_to_host(json!({ "type": "pdfcraft:sign-placements", "placements": placements }))
+        let sent = self.post_to_host(json!({ "type": "pdfcraft:sign-placements", "placements": placements }));
+        if sent {
+            // The places went: the request is the host's now, and the document is hers again.
+            self.esign.mode = None;
+        }
+        sent
     }
 
     /// The commands the host offers now, for the palette and the control channel.
@@ -397,6 +429,7 @@ pub(crate) fn banner(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     }
     let t = Tokens::get(ui.ctx());
     let mut send = false;
+    let mut stop = false;
     let mut remove = None;
     egui::Frame::NONE.fill(t.accent_soft).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -420,7 +453,11 @@ pub(crate) fn banner(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
                             }
                         }
                     }
-                    if crate::widgets::pill_button(ui, tl!("Send"), true).clicked() {
+                    if ui.button(tl!("Stop placing")).clicked() {
+                        stop = true;
+                    }
+                    let any = !r.boxes.is_empty();
+                    if ui.add_enabled_ui(any, |ui| crate::widgets::pill_button(ui, tl!("Send"), true)).inner.clicked() && any {
                         send = true;
                     }
                 });
@@ -433,6 +470,9 @@ pub(crate) fn banner(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     }
     if send {
         app.send_placements();
+    }
+    if stop {
+        app.stop_request_mode();
     }
 }
 
