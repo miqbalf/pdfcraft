@@ -184,9 +184,103 @@ fn drawn_pick_posts_strokes_json_that_parses_with_graphic_from_json() {
             assert_eq!(strokes.len(), drawn.len(), "every stroke arrives");
             for (got, sent) in strokes.iter().zip(&drawn) {
                 assert_eq!(got.len(), sent.len(), "with every point");
+                for (g, s) in got.iter().zip(sent) {
+                    // f32 -> f64 is exact, so the coordinates must come back untouched: no flip, no scale.
+                    assert_eq!(*g, [f64::from(s[0]), f64::from(s[1])], "coordinates arrive as drawn");
+                }
             }
         }
         other => panic!("not strokes: {other:?}"),
+    }
+}
+
+/// Start picking in sign mode with `draft` in the open picker.
+fn picking_with(draft: crate::fill_sign::SigDraft) -> (PdfCraftApp, Posted) {
+    let (mut app, posted) = in_sign_mode(SIGN_PAGE);
+    assert!(app.sign_field_clicked(MINE));
+    app.signature_draft = crate::fill_sign::SigDraft { for_request: true, ..draft };
+    (app, posted)
+}
+
+fn assert_refused_keeps_picker(app: &PdfCraftApp, posted: &Posted) {
+    assert!(posted.borrow().is_empty(), "a refused mark posts nothing");
+    assert!(app.esign.picking(), "still picking");
+    assert_eq!(app.dialog, Some(crate::Dialog::Signature), "the picker stays open");
+}
+
+#[test]
+fn an_oversized_drawing_is_refused_in_the_open_picker_and_kept() {
+    let strokes: Vec<Vec<[f32; 2]>> = (0..65).map(|i| vec![[0.1, 0.1], [0.2 + i as f32 * 0.001, 0.3]]).collect();
+    let (mut app, posted) = picking_with(crate::fill_sign::SigDraft { drawing: true, strokes: strokes.clone(), ..Default::default() });
+    app.signature_pad_applied();
+    assert_refused_keeps_picker(&app, &posted);
+    assert_eq!(app.signature_draft.strokes, strokes, "the drawing is kept");
+    assert!(app.signature_draft.drawing);
+    let why = app.signature_draft.error.clone().unwrap_or_default();
+    assert!(why.contains("more than 64 strokes"), "the sentence is shown in the dialog: {why:?}");
+}
+
+#[test]
+fn a_typed_mark_over_100_characters_is_refused_in_the_open_picker() {
+    let long = "a".repeat(101);
+    let (mut app, posted) = picking_with(crate::fill_sign::SigDraft { text: long.clone(), ..Default::default() });
+    app.signature_pad_applied();
+    assert_refused_keeps_picker(&app, &posted);
+    assert_eq!(app.signature_draft.text, long, "the text is kept");
+    let why = app.signature_draft.error.clone().unwrap_or_default();
+    assert!(why.contains("100"), "{why:?}");
+    // Exactly 100 goes through, and closes the picker.
+    app.signature_draft.text = "a".repeat(100);
+    app.signature_pad_applied();
+    assert_eq!(posted.borrow().len(), 1);
+    assert!(!app.esign.picking());
+    assert_eq!(app.dialog, None);
+}
+
+#[test]
+fn a_typed_mark_input_stops_at_100_characters_in_sign_mode() {
+    let d = crate::fill_sign::SigDraft { for_request: true, ..Default::default() };
+    assert_eq!(d.text_limit(), 100);
+    assert_eq!(crate::fill_sign::SigDraft::default().text_limit(), pdfcraft_engine::MAX_SIGNATURE_CHARS);
+}
+
+/// The conversion as it was before M4, kept here as the reference the output must match byte for byte.
+fn legacy_mark_json(saved: &SavedSig) -> Result<Value, String> {
+    match saved {
+        SavedSig::Typed(text) => {
+            let text = text.trim();
+            if text.is_empty() {
+                return Err("Type your name first.".to_string());
+            }
+            Ok(serde_json::json!({ "kind": "typed", "text": text }))
+        }
+        SavedSig::Drawn(strokes) => {
+            let strokes: Vec<Vec<[f64; 2]>> =
+                strokes.iter().filter(|s| !s.is_empty()).map(|s| s.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect()).collect();
+            pdfcraft_engine::esign::graphic_to_json(&pdfcraft_engine::sign::Graphic::Strokes(strokes)).map_err(|e| e.to_string())
+        }
+        SavedSig::Image(image) => pdfcraft_engine::esign::graphic_to_json(&image.graphic()).map_err(|e| e.to_string()),
+    }
+}
+
+#[test]
+fn mark_json_output_is_byte_identical_to_the_earlier_conversion() {
+    let cases = [
+        SavedSig::Drawn(vec![vec![[0.1, 0.1], [0.3, 0.2], [0.5, 0.12]], vec![[0.6, 0.05], [0.8, 0.15]]]),
+        SavedSig::Drawn(vec![vec![], vec![[0.25, 0.75], [0.125, 0.5]], vec![]]),
+        SavedSig::Drawn(vec![vec![[1.0 / 3.0, 2.0 / 3.0], [0.7, 0.01]]]),
+        SavedSig::Drawn(vec![]),
+        SavedSig::Drawn(vec![vec![]]),
+        SavedSig::Typed("  Bob Example ".into()),
+        SavedSig::Typed(String::new()),
+    ];
+    for saved in &cases {
+        let (new, old) = (mark_json(saved), legacy_mark_json(saved));
+        match (&new, &old) {
+            (Ok(n), Ok(o)) => assert_eq!(serde_json::to_string(n).unwrap(), serde_json::to_string(o).unwrap(), "{saved:?}"),
+            (Err(_), Err(_)) => {}
+            _ => panic!("{saved:?}: {new:?} vs {old:?}"),
+        }
     }
 }
 

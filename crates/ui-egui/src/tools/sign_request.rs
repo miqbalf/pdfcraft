@@ -122,23 +122,29 @@ pub fn view_box_to_user(page: &pdfcraft_render::PageInfo, shown: [f32; 4]) -> [f
 }
 
 /// The `graphic` JSON of a mark picked in the Fill & Sign picker. A typed mark is its text (the
-/// host's worker draws it); drawn strokes and images go as their JSON form, within its caps.
+/// host's worker draws it, up to the same 100 characters the server takes); drawn strokes and
+/// images go as their JSON form, within its caps.
 pub fn mark_json(saved: &SavedSig) -> Result<Value, String> {
-    match saved {
+    let graphic = match saved {
         SavedSig::Typed(text) => {
             let text = text.trim();
             if text.is_empty() {
                 return Err(tl!("Type your name first.").to_string());
             }
-            Ok(json!({ "kind": "typed", "text": text }))
+            if text.chars().count() > pdfcraft_engine::esign::MAX_TYPED_CHARS {
+                return Err(crate::i18n::fmt(
+                    tl!("A typed signature can have at most {n} characters."),
+                    &[("n", &pdfcraft_engine::esign::MAX_TYPED_CHARS.to_string())],
+                ));
+            }
+            return Ok(json!({ "kind": "typed", "text": text }));
         }
-        SavedSig::Drawn(strokes) => {
-            let strokes: Vec<Vec<[f64; 2]>> =
-                strokes.iter().filter(|s| !s.is_empty()).map(|s| s.iter().map(|p| [f64::from(p[0]), f64::from(p[1])]).collect()).collect();
-            pdfcraft_engine::esign::graphic_to_json(&pdfcraft_engine::sign::Graphic::Strokes(strokes)).map_err(|e| e.to_string())
-        }
-        SavedSig::Image(image) => pdfcraft_engine::esign::graphic_to_json(&image.graphic()).map_err(|e| e.to_string()),
-    }
+        // A bare click leaves an empty stroke behind; it is not part of the mark.
+        SavedSig::Drawn(strokes) => SavedSig::Drawn(strokes.iter().filter(|s| !s.is_empty()).cloned().collect()).graphic(),
+        SavedSig::Image(_) => saved.graphic(),
+    };
+    let graphic = graphic.ok_or_else(|| tl!("This signature can't be drawn.").to_string())?;
+    pdfcraft_engine::esign::graphic_to_json(&graphic).map_err(|e| e.to_string())
 }
 
 /// A command the host offers, for the palette: its id, label and icon.
@@ -292,19 +298,27 @@ impl PdfCraftApp {
     }
 
     /// The signature pad's Apply (Done in sign mode): in sign mode the mark goes to the host;
-    /// otherwise it becomes the saved signature or initials and its tool is picked.
-    pub fn signature_pad_applied(&mut self) {
-        let d = std::mem::take(&mut self.signature_draft);
+    /// otherwise it becomes the saved signature or initials and its tool is picked. Returns
+    /// whether the dialog may close: a mark refused at the caps keeps it open, with the drawing,
+    /// and the reason in `signature_draft.error`.
+    pub fn signature_pad_applied(&mut self) -> bool {
         if self.esign.picking() {
-            self.dialog = None;
-            self.sign_pick_cancelled();
-            match d.saved().map(|saved| mark_json(&saved)) {
-                Some(Ok(graphic)) => self.post_mark(graphic),
-                Some(Err(why)) => self.notify_fmt("Couldn't use this signature: {e}", &[("e", &why)]),
-                None => {}
+            let Some(saved) = self.signature_draft.saved() else { return true };
+            match mark_json(&saved) {
+                Ok(graphic) => {
+                    self.signature_draft = Default::default();
+                    self.dialog = None;
+                    self.sign_pick_cancelled();
+                    self.post_mark(graphic);
+                }
+                Err(why) => {
+                    self.signature_draft.error = Some(crate::i18n::fmt(tl!("Couldn't use this signature: {e}"), &[("e", &why)]));
+                    return false;
+                }
             }
-            return;
+            return true;
         }
+        let d = std::mem::take(&mut self.signature_draft);
         let tool = if d.initials {
             self.initials = d.saved();
             crate::fill_sign::FillTool::Initials
@@ -315,6 +329,7 @@ impl PdfCraftApp {
         self.fill_tool = tool;
         self.quick_tool = crate::QuickTool::Fill(tool);
         self.toast = None;
+        true
     }
 
     fn post_mark(&mut self, graphic: Value) {

@@ -97,6 +97,8 @@ pub struct SigDraft {
     /// Picking the mark for a Nextcloud signature request: Apply says Done, and the mark goes to
     /// the host instead of being saved.
     pub for_request: bool,
+    /// Why Apply was refused, shown in the open dialog.
+    pub error: Option<String>,
 }
 
 impl SigDraft {
@@ -123,6 +125,12 @@ impl SigDraft {
             }
         }
         false
+    }
+
+    /// The most characters the typed mark takes.
+    pub fn text_limit(&self) -> usize {
+        // A mark for a signature request goes to the server, which takes 100.
+        if self.for_request { pdfcraft_engine::esign::MAX_TYPED_CHARS } else { pdfcraft_engine::MAX_SIGNATURE_CHARS }
     }
 
     /// The Draw tab is showing (not Type, Image or Scan).
@@ -758,12 +766,12 @@ pub(crate) fn signature_pad(
     }
     if !d.drawing {
         let l = ui.label(egui::RichText::new(crate::i18n::fmt(tl!("Type your {what}."), &[("what", what)])).color(t.text_muted));
-        ui.add(
-            egui::TextEdit::singleline(&mut d.text)
-                .char_limit(pdfcraft_engine::MAX_SIGNATURE_CHARS)
-                .desired_width(460.0)
-                .hint_text(tl!(if d.initials { "Initials" } else { "Your name" })),
-        )
+        let limit = d.text_limit();
+        ui.add(egui::TextEdit::singleline(&mut d.text).char_limit(limit).desired_width(460.0).hint_text(tl!(if d.initials {
+            "Initials"
+        } else {
+            "Your name"
+        })))
         .labelled_by(l.id);
         let (rect, _) = ui.allocate_exact_size(vec2(460.0, 150.0), Sense::hover());
         let painter = ui.painter_at(rect);
@@ -840,12 +848,16 @@ fn image_preview(ui: &egui::Ui, rect: egui::Rect, image: &SignatureImage, cache:
 
 fn pad_buttons(ui: &mut egui::Ui, d: &mut SigDraft) -> (bool, bool) {
     ui.add_space(10.0);
+    if let Some(why) = &d.error {
+        ui.colored_label(ui.visuals().error_fg_color, why);
+    }
     let (mut apply, mut cancel) = (false, false);
     ui.horizontal(|ui| {
         if d.draw_tab() && ui.add_enabled(!d.strokes.is_empty(), egui::Button::new(tl!("Undo"))).clicked() {
             d.undo_stroke();
         }
         if ui.button(tl!("Clear")).clicked() {
+            d.error = None;
             d.strokes.clear();
             d.text.clear();
             d.image = None;

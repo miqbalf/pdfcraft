@@ -1491,12 +1491,12 @@ fn dialog_signature(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending)
     if browse {
         app.pick_signature_image();
     }
-    if req.apply {
-        app.signature_pad_applied();
-    } else if cancel {
+    // A mark refused at the caps keeps the dialog open, with the drawing and the reason.
+    let applied = req.apply && app.signature_pad_applied();
+    if !req.apply && cancel {
         app.sign_pick_cancelled();
     }
-    req.close = req.apply || cancel;
+    req.close = applied || cancel;
     false
 }
 
