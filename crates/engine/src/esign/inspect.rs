@@ -37,7 +37,8 @@ pub struct SignatureSummary {
     /// `none`, `allowed` or `disallowed`: what later revisions did, as the signature permits.
     pub modification: String,
     pub signer: Option<String>,
-    /// The signature's `/M`, as written.
+    /// The signature's `/M` in UTC, `YYYY-MM-DDTHH:MM:SSZ` like every date on the wire; none
+    /// when it is missing or not a date.
     pub date: Option<String>,
 }
 
@@ -60,9 +61,15 @@ impl From<&SignatureInfo> for SignatureSummary {
             status: status.into(),
             modification: modification.into(),
             signer: s.signer.clone(),
-            date: s.date.clone(),
+            date: s.date.as_deref().and_then(iso_utc),
         }
     }
+}
+
+/// A PDF date (`D:20261123090000+07'00'`) as `YYYY-MM-DDTHH:MM:SSZ`, in UTC.
+fn iso_utc(pdf_date: &str) -> Option<String> {
+    let t = pdfcraft_sign::Time::from_pdf(pdf_date)?;
+    (t.year <= 9999).then(|| format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", t.year, t.month, t.day, t.hour, t.minute, t.second))
 }
 
 /// Lowercase hex SHA-256 of `bytes`.
@@ -91,12 +98,21 @@ pub(super) enum Opened {
     NeedsPassword,
 }
 
-/// Open `bytes` in a session of their own whose clock reads `now` (UTC), with the document's
-/// scripts off: the PDF is untrusted, and nothing here needs them.
-pub(super) fn open(bytes: &[u8], now: i64) -> Result<Opened, EsignError> {
+/// A session whose clock reads `now` (UTC), with document scripts off: the PDFs are untrusted,
+/// and nothing here needs them.
+///
+/// The clock is per thread, not per session: a second `session_at` on the same thread moves
+/// the first session's clock too. Open one at a time, or both at the same `now`.
+pub(super) fn session_at(now: i64) -> Session {
     NOW.with(|c| c.set(now));
     let mut session = Session::new().with_wall_clock(fixed_now, utc);
     session.set_javascript(false);
+    session
+}
+
+/// Open `bytes` in a session of their own whose clock reads `now` ([`session_at`]).
+pub(super) fn open(bytes: &[u8], now: i64) -> Result<Opened, EsignError> {
+    let mut session = session_at(now);
     match session.open("document.pdf", None, Arc::new(bytes.to_vec()), None) {
         Ok(id) => Ok(Opened::Doc(session, id)),
         Err(OpenError::NeedsPassword | OpenError::WrongPassword) => Ok(Opened::NeedsPassword),

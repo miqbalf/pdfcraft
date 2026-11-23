@@ -4,15 +4,15 @@
 //! Both are built only from existing edits: blank pages, added text and form fields, so they
 //! go through the same `Edit` and `Session` path as every other change (rule 14). Text drawn
 //! here is untrusted (titles, names, user agents): it is cut to a length and drawn in the
-//! standard fonts, with what they cannot show replaced by `?`.
+//! standard fonts, with what they cannot show written as its code point (`[U+1EC5]`).
 
 use pdfcraft_edit::added::text_rect;
 use serde_json::{Map, Value};
 
 use super::EsignError;
-use super::inspect::{Opened, open};
+use super::inspect::{Opened, open, session_at};
 use super::prepare::{AuditHeader, SignerSlot, completed_field, row_field, seal_field, signer_field};
-use crate::{AddedText, Edit, FieldProps, FontFamily, NewField, Session};
+use crate::{AddedText, Edit, FieldProps, FontFamily, NewField};
 
 /// The page margin, in points.
 const MARGIN: f64 = 54.0;
@@ -31,11 +31,32 @@ const FOOTER: f64 = 108.0;
 const MAX_LINE: usize = 300;
 /// At most this many events in a printed trail.
 const MAX_EVENTS: usize = 5_000;
+/// At most this many signers, and as many signatures, in a printed trail.
+const MAX_LIST: usize = 500;
+/// At most this many keys in the trail and in any one of its objects.
+const MAX_KEYS: usize = 64;
+/// The keys of an event that follow its head, before anything else, so a cut never hides them.
+const EVENT_FIRST: [&str; 3] = ["mac", "sha256_before", "sha256_after"];
 
-/// `s` as the standard fonts draw it: control characters become spaces, characters outside
-/// WinAnsiEncoding become `?`, and the text is cut to `max` characters.
+/// `s` as the standard fonts draw it: control characters become spaces, a character outside
+/// WinAnsiEncoding is written as its code point (`[U+1EC5]`), so a name stays unambiguous, and
+/// text past `max` characters is cut, the cut marked with an ellipsis.
 pub(super) fn clean(s: &str, max: usize) -> String {
-    s.chars().take(max).map(|c| if c.is_control() { ' ' } else { c }).map(|c| if pdfcraft_fonts::win_ansi_encodable(c) { c } else { '?' }).collect()
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i == max {
+            out.push('\u{2026}');
+            break;
+        }
+        if c.is_control() {
+            out.push(' ');
+        } else if pdfcraft_fonts::win_ansi_encodable(c) {
+            out.push(c);
+        } else {
+            out.push_str(&format!("[U+{:04X}]", u32::from(c)));
+        }
+    }
+    out
 }
 
 /// The audit page's size: the last page's (as shown), unless that is too small or too large.
@@ -255,14 +276,28 @@ pub fn audit_document(trail: &Value) -> Result<Vec<u8>, EsignError> {
     let obj = |k: &str| t.get(k).and_then(Value::as_object).unwrap_or(&empty);
     let list = |k: &str| t.get(k).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     let events = list("events");
-    if events.len() > MAX_EVENTS {
-        return Err(bad("The audit trail has too many events to print."));
+    for (key, cap, why) in [
+        ("events", MAX_EVENTS, "The audit trail has too many events to print."),
+        ("signers", MAX_LIST, "The audit trail has too many signers to print."),
+        ("signatures", MAX_LIST, "The audit trail has too many signatures to print."),
+    ] {
+        if list(key).len() > cap {
+            return Err(bad(why));
+        }
+    }
+    let objects = ["request", "chain", "certificate"].map(obj);
+    let entries = ["events", "signers", "signatures"].into_iter().flat_map(list).filter_map(Value::as_object);
+    if t.len() > MAX_KEYS || objects.into_iter().chain(entries).any(|o| o.len() > MAX_KEYS) {
+        return Err(bad("An entry of the audit trail has too many fields to print."));
     }
     let request = obj("request");
-    let created = ["created_utc", "created_at", "created"].iter().find_map(|k| request.get(*k).and_then(Value::as_str));
-    let now = created.and_then(|c| super::prepare::parse_date(c).ok()).unwrap_or(0);
+    // Both of the file's dates are the export's time (else the request's): the same trail
+    // prints the same bytes, and the file is never modified before it was created.
+    let stamp = t.get("exported_at").and_then(Value::as_str).into_iter();
+    let mut created = stamp.chain(["created_utc", "created_at", "created"].iter().filter_map(|k| request.get(*k).and_then(Value::as_str)));
+    let now = created.find_map(|c| super::prepare::parse_date(c).ok()).unwrap_or(0);
 
-    let blank = Session::new().create_blank(LETTER.0, LETTER.1, 1)?;
+    let blank = session_at(now).create_blank(LETTER.0, LETTER.1, 1)?;
     let (mut session, id) = match open(&blank, now)? {
         Opened::Doc(s, id) => (s, id),
         Opened::NeedsPassword => return Err(EsignError::NeedsPassword),
@@ -278,15 +313,19 @@ pub fn audit_document(trail: &Value) -> Result<Vec<u8>, EsignError> {
     for s in list("signers").iter().filter_map(Value::as_object) {
         let head = format!("{}. {} ({})", field(s, "position"), field(s, "display_name"), field(s, "uid"));
         let more = rest(s, &["position", "display_name", "uid"]);
-        p.text(line(if more.is_empty() { head } else { format!("{head} \u{b7} {more}") }), 9.0, false, 2.0);
+        p.text(line(if more.is_empty() { head } else { format!("{head} \u{b7} {more}") }), 9.0, false, 0.0);
     }
     p.y -= 8.0;
 
     p.text("Events".into(), 11.0, true, 4.0);
     for e in events.iter().filter_map(Value::as_object) {
         let head = format!("#{} {} {} by {}", field(e, "seq"), field(e, "at"), field(e, "kind"), field(e, "actor_uid"));
-        let more = rest(e, &["seq", "at", "kind", "actor_uid"]);
-        p.text(line(if more.is_empty() { head } else { format!("{head} \u{b7} {more}") }), 7.0, false, 3.0);
+        let first = EVENT_FIRST.iter().filter_map(|k| e.get(*k).map(|v| format!("{k} {}", shown(k, v))));
+        let more = rest(e, &["seq", "at", "kind", "actor_uid", "mac", "sha256_before", "sha256_after"]);
+        let parts: Vec<String> = std::iter::once(head).chain(first).chain((!more.is_empty()).then_some(more)).collect();
+        // No gap: consecutive events share one text item per page, so thousands of events stay
+        // a few hundred edits.
+        p.text(line(parts.join(" \u{b7} ")), 7.0, false, 0.0);
     }
     p.y -= 8.0;
 
@@ -296,12 +335,14 @@ pub fn audit_document(trail: &Value) -> Result<Vec<u8>, EsignError> {
     p.text(line(rest(obj("certificate"), &[])), 9.0, false, 8.0);
     p.text("Signatures in the current file".into(), 11.0, true, 4.0);
     for s in list("signatures").iter().filter_map(Value::as_object) {
-        p.text(line(format!("{} \u{b7} {}", field(s, "field"), rest(s, &["field"]))), 9.0, false, 2.0);
+        p.text(line(format!("{} \u{b7} {}", field(s, "field"), rest(s, &["field"]))), 9.0, false, 0.0);
     }
     p.y -= 8.0;
     p.text(line(format!("Final SHA-256: {}", t.get("final_sha256").map(|v| shown("", v)).unwrap_or_else(|| "-".into()))), 9.0, false, 0.0);
     p.flush();
 
+    // The blank page's save stamped only `/ModDate`; the creation date is the same fixed time.
+    p.edits.insert(0, Edit::SetInfo { key: "CreationDate".into(), value: pdfcraft_cos::pdf_date(now) });
     session.apply(id, Edit::Batch { label: "Print audit trail".into(), edits: p.edits })?;
     Ok(session.save_full_bytes(id)?.to_vec())
 }

@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::EsignError;
 use super::audit_page::{audit_edits, page_size};
 use super::inspect::{Opened, open, sha256_hex};
-use crate::Edit;
+use crate::{Edit, EditError};
 
 /// Who asked for the signatures, and where: the audit page's header.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +77,18 @@ pub(super) fn parse_date(date: &str) -> Result<i64, EsignError> {
         .map_err(|_| EsignError::Validation("The date is not a UTC time of the form YYYY-MM-DDTHH:MM:SSZ.".into()))
 }
 
+/// Why the prepare edits were refused, in a sentence the requester can act on. The inner text
+/// never reaches the wire.
+fn refusal(e: EditError) -> EsignError {
+    match e {
+        EditError::NotPermitted(_) => {
+            EsignError::Validation("This PDF's security settings do not allow changes; remove its owner password first.".into())
+        }
+        EditError::Form(_) => EsignError::Validation("This PDF has form fields whose names clash with the signature fields.".into()),
+        other => other.into(),
+    }
+}
+
 /// A place may lie this far outside its page's visible area (rounding in the browser).
 const EDGE: f64 = 0.5;
 
@@ -132,8 +144,14 @@ pub fn prepare(bytes: &[u8], header: &AuditHeader, signers: &[SignerSlot], date:
 
     let size = page_size(pages.last().map(|p| (f64::from(p.width), f64::from(p.height))));
     let edits = audit_edits(pages.len(), size, header, signers);
-    session.apply(id, Edit::Batch { label: "Prepare signature request".into(), edits })?;
+    session.apply(id, Edit::Batch { label: "Prepare signature request".into(), edits }).map_err(refusal)?;
     let out = session.save_bytes(id)?;
+    // A file opened through a repair (a rebuilt cross-reference table, a missing page tree) is
+    // written out whole: the input would survive only as a repaired copy, and every later
+    // signature's claim that it covers the bytes the signer saw would rest on that copy.
+    if !out.starts_with(bytes) {
+        return Err(EsignError::Validation("This PDF is damaged; open it in PdfCraft and save it again before asking for signatures.".into()));
+    }
     Ok(Prepared {
         sha256: sha256_hex(&out),
         bytes: out.to_vec(),

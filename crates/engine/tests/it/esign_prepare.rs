@@ -7,7 +7,7 @@ use pdfcraft_engine::esign::{
 };
 use pdfcraft_engine::export::Exporter;
 use pdfcraft_engine::sign::pkcs12;
-use pdfcraft_engine::{Edit, Protection, Session, SignOptions};
+use pdfcraft_engine::{Changes, Edit, NewField, Protection, Session, SignOptions};
 use serde_json::json;
 
 const DATE: &str = "2026-11-23T09:00:00Z";
@@ -267,4 +267,128 @@ fn same_inputs_same_bytes() {
     assert_eq!(a.sha256, b.sha256);
     let later = prepare(&input, &header(), &slots(), "2026-11-24T09:00:00Z").expect("prepares");
     assert_ne!(a.bytes, later.bytes, "the date is what changes the output");
+}
+
+/// A PDF whose `startxref` points nowhere: it opens only through a rebuilt cross-reference
+/// table, which a save writes out in full.
+fn damaged_blank() -> Vec<u8> {
+    let bytes = blank(1);
+    let at = bytes.windows(9).rposition(|w| w == b"startxref").expect("startxref");
+    let mut out = bytes[..at].to_vec();
+    out.extend_from_slice(b"startxref\n7\n%%EOF\n");
+    out
+}
+
+#[test]
+fn prepare_refuses_input_it_cannot_keep_byte_for_byte() {
+    let damaged = damaged_blank();
+    match prepare(&damaged, &header(), &slots(), DATE) {
+        Err(e @ EsignError::Validation(_)) => assert!(e.to_string().contains("damaged"), "{e}"),
+        Err(e) => panic!("{e:?}"),
+        Ok(out) => assert!(out.bytes.starts_with(&damaged), "a prepared file always starts with the input bytes"),
+    }
+}
+
+#[test]
+fn prepare_says_why_an_owner_password_or_a_name_clash_refuses() {
+    // An owner password that allows no changes (no open password).
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("x.pdf", None, Arc::new(blank(1)), None).expect("opens");
+    let p = Protection { permissions_password: Some("owner".into()), changes: Changes::None, ..Protection::default() };
+    s.apply(id, Edit::Protect(p)).expect("protects");
+    let locked = s.save_bytes(id).expect("saves").to_vec();
+    let err = prepare(&locked, &header(), &slots(), DATE).expect_err("refused");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("security settings"), "{err}");
+
+    // A terminal field named like the request's parent.
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("x.pdf", None, Arc::new(blank(1)), None).expect("opens");
+    let edit =
+        Edit::AddField { page: 0, rect: [50.0, 50.0, 200.0, 80.0], kind: NewField::Text { multiline: false }, name: Some("CraftOffice".into()) };
+    s.apply(id, edit).expect("adds");
+    let clashing = s.save_bytes(id).expect("saves").to_vec();
+    let err = prepare(&clashing, &header(), &slots(), DATE).expect_err("refused");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("clash"), "{err}");
+}
+
+fn event(seq: usize) -> serde_json::Value {
+    json!({ "seq": seq, "kind": "viewed", "actor_uid": "bob", "at": 1_795_420_800_000_i64 + seq as i64, "mac": format!("{seq:064x}") })
+}
+
+#[test]
+fn audit_document_caps_every_list_and_object() {
+    let trail = |events: usize, signers: usize, signatures: usize| {
+        json!({
+            "request": { "id": 42, "title": "Supply contract", "created_utc": CREATED },
+            "signers": (1..=signers).map(|p| json!({ "position": p, "uid": "u", "display_name": "U" })).collect::<Vec<_>>(),
+            "signatures": (1..=signatures).map(|i| json!({ "field": format!("S{i}"), "status": "unknown" })).collect::<Vec<_>>(),
+            "events": (1..=events).map(event).collect::<Vec<_>>(),
+        })
+    };
+    let started = std::time::Instant::now();
+    let pdf = audit_document(&trail(5_000, 3, 3)).expect("5,000 events print");
+    eprintln!("audit_document: 5,000 events, {} pages, {} bytes, {:?}", page_count(&pdf), pdf.len(), started.elapsed());
+    for (t, what) in [(trail(5_001, 3, 3), "events"), (trail(1, 501, 3), "signers"), (trail(1, 3, 501), "signatures")] {
+        let err = audit_document(&t).expect_err(what);
+        assert!(matches!(err, EsignError::Validation(_)), "{what}: {err:?}");
+    }
+    assert!(audit_document(&trail(1, 500, 500)).is_ok(), "500 signers and signatures print");
+    let mut wide = trail(1, 1, 1);
+    let keys: serde_json::Map<String, serde_json::Value> = (0..65).map(|k| (format!("k{k:02}"), json!(k))).collect();
+    wide["request"] = serde_json::Value::Object(keys.clone());
+    assert!(matches!(audit_document(&wide), Err(EsignError::Validation(_))), "65 keys in one object");
+    let mut fits = keys;
+    fits.remove("k64");
+    wide["request"] = serde_json::Value::Object(fits);
+    assert!(audit_document(&wide).is_ok(), "64 keys print");
+}
+
+/// The file's `/Info` date `key`, as its 14 digits (`YYYYMMDDHHmmSS`).
+fn info_date(pdf: &[u8], key: &str) -> Option<String> {
+    let v = pdfcraft_organize::info(&cos(pdf), key)?;
+    Some(v.trim_start_matches("D:").chars().take(14).collect())
+}
+
+#[test]
+fn audit_document_is_deterministic_and_created_no_later_than_modified() {
+    let trail = json!({ "request": { "id": 42, "title": "T", "created_utc": CREATED }, "events": [event(1)] });
+    let a = audit_document(&trail).expect("prints");
+    let created = info_date(&a, "CreationDate").expect("a creation date");
+    let modified = info_date(&a, "ModDate").expect("a modification date");
+    assert!(created <= modified, "{created} after {modified}");
+    std::thread::sleep(std::time::Duration::from_millis(1_100));
+    assert_eq!(a, audit_document(&trail).expect("prints"), "the same trail prints the same bytes");
+}
+
+#[test]
+fn a_cut_event_line_is_marked_and_keeps_its_mac() {
+    let mac = "c0ffee".repeat(10);
+    // Keys that sort before `mac`, each short enough to print, together far past the line's cut.
+    let mut e = json!({ "seq": 7, "kind": "signed", "actor_uid": "bob", "at": 1_795_420_800_000_i64, "mac": mac.clone() });
+    for k in 0..8 {
+        e[format!("a{k}")] = json!("y".repeat(250));
+    }
+    let pdf = audit_document(&json!({ "request": { "title": "T" }, "events": [e] })).expect("prints");
+    let flat = text_of_pages(&pdf, 0..page_count(&pdf)).split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(flat.contains(&mac), "the MAC survives the cut");
+    assert!(flat.contains('\u{2026}'), "the cut is marked");
+}
+
+#[test]
+fn signature_dates_are_iso_utc() {
+    let i = inspect(&signed_blank()).expect("inspects");
+    let date = i.signatures.iter().find_map(|s| s.date.clone()).expect("a date");
+    let parsed = chrono::NaiveDateTime::parse_from_str(&date, "%Y-%m-%dT%H:%M:%SZ");
+    assert!(parsed.is_ok(), "{date}");
+}
+
+#[test]
+fn characters_the_fonts_cannot_draw_print_as_code_points() {
+    let mut h = header();
+    h.requester_name = "Nguy\u{1ec5}n".into();
+    let out = prepare(&blank(1), &h, &slots(), DATE).expect("prepares");
+    let text = text_of_pages(&out.bytes, 1..2);
+    assert!(text.contains("Nguy[U+1EC5]n"), "{text}");
 }
