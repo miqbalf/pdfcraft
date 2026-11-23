@@ -2935,3 +2935,38 @@ fn save_as_locks_the_signature_in_the_copy_only() {
         let _ = std::fs::remove_file(&out);
     }
 }
+
+/// S5 re-review R2: a lock answer is for the one copy it was given for. A copy that never
+/// reached delivery, or was cancelled, leaves nothing behind that locks a later copy.
+#[test]
+fn a_lock_answer_never_locks_a_later_copy() {
+    let out = std::env::temp_dir().join(format!("pdfcraft-lock-stale-{}.pdf", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let mut h = harness();
+    h.state_mut().signature = Some(SavedSig::Typed("Ada Lovelace".into()));
+    h.state_mut().execute("sign.fill.signature");
+    h.run_steps(2);
+    click(&mut h, 40.0, 300.0);
+    let id = h.state().views[0].id;
+    let marks = |bytes: Vec<u8>| {
+        let mut s = pdfcraft_engine::Session::new();
+        let d = s.open("copy.pdf", None, std::sync::Arc::new(bytes), None).expect("the copy opens");
+        s.get(d).unwrap().info.annotations.iter().filter(|a| a.fill_sign).count()
+    };
+    // Lock, then the save dialog is cancelled.
+    h.state_mut().pick_override = Some(Vec::new());
+    h.state_mut().run_command("file.save_as");
+    h.run_steps(2);
+    h.get_by_label("Lock and save").click();
+    h.run_steps(4);
+    assert!(h.state().copy_lock.is_none(), "the answer went with the cancelled copy");
+    // An answer left over by a copy that stopped before delivery.
+    h.state_mut().copy_lock = Some((id, true));
+    h.state_mut().ask_to_lock_signatures = false;
+    h.state_mut().pick_override = None;
+    h.state_mut().save_override = Some(out.to_string_lossy().into_owned());
+    h.state_mut().run_command("file.save_as");
+    h.run_steps(3);
+    assert_eq!(marks(std::fs::read(&out).unwrap()), 1, "the second copy is not locked");
+    let _ = std::fs::remove_file(&out);
+}

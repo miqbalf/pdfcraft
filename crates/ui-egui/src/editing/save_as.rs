@@ -116,6 +116,8 @@ impl PdfCraftApp {
     /// [`Self::save_as_copy`] for the document in tab `index` (a form script's SaveAs runs on its
     /// own document, which need not be the active one).
     pub(crate) fn save_as_copy_in(&mut self, index: usize, id: &str) -> bool {
+        // A lock answer belongs to one copy. Drop one left by a copy that never wrote.
+        self.copy_lock = None;
         let Some(writer) = Writer::of(id) else {
             self.notify_error(craft_share::export::ExportError::UnknownFormat(id.to_string()));
             return false;

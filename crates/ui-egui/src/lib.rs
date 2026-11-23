@@ -430,7 +430,8 @@ pub struct PdfCraftApp {
     pub(crate) lock_remember: bool,
     /// The lock question's answer for a Save As copy of this document: it locks the copy's
     /// Fill & Sign marks only, never the document's, and is never remembered.
-    pub(crate) copy_lock: Option<(pdfcraft_engine::DocId, bool)>,
+    #[doc(hidden)]
+    pub copy_lock: Option<(pdfcraft_engine::DocId, bool)>,
     /// Point size for new Fill & Sign text and dates, kept across launches.
     pub fill_text_size: f64,
     pub fill_tool: fill_sign::FillTool,

@@ -381,6 +381,8 @@ impl PdfCraftApp {
             if let Some(index) = self.views.iter().position(|v| v.id == p.id) {
                 self.save_then(index, p.target, p.after);
             }
+            // `save_copy` takes the answer. Cancel, error or no window leaves it: drop it here.
+            self.copy_lock = None;
             return;
         }
         if lock && !self.flatten_fill_sign_on_save && !self.flatten_fill_sign_in(p.id) {

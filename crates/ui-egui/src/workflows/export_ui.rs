@@ -402,7 +402,10 @@ impl PdfCraftApp {
     /// is written.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn ask_replace(&mut self, p: PendingReplace) {
-        if self.ctx.is_none() {
+        // No window, or another dialog is open (the Export dialog itself is closing): refuse
+        // rather than replace that dialog.
+        let busy = !matches!(self.dialog, None | Some(crate::Dialog::Export(_)));
+        if self.ctx.is_none() || busy {
             let n = p.existing.to_string();
             self.notify_fmt("{n} of the files to export already exist in that folder. Nothing was exported.", &[("n", &n)]);
             return;
@@ -455,6 +458,23 @@ impl PdfCraftApp {
 mod tests {
     use super::{all_images_stem, file_mime, page_image_name};
     use pdfcraft_engine::export::ImageFormat;
+
+    /// S5 re-review R3: a replace question never takes the place of another open dialog; the
+    /// export is refused, saying why, and the other dialog stays.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_replace_question_never_replaces_another_dialog() {
+        let mut app = crate::PdfCraftApp::new();
+        app.ctx = Some(egui::Context::default());
+        app.dialog = Some(crate::Dialog::About);
+        let wrote = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let w = wrote.clone();
+        let write: Box<dyn FnOnce(&mut crate::PdfCraftApp) + Send> = Box::new(move |_| w.store(true, std::sync::atomic::Ordering::SeqCst));
+        app.ask_replace(super::PendingReplace { existing: 2, write });
+        assert_eq!(app.dialog, Some(crate::Dialog::About), "the open dialog stays");
+        assert!(app.pending_replace.is_none() && !wrote.load(std::sync::atomic::Ordering::SeqCst), "nothing written");
+        assert!(app.toast.as_ref().is_some_and(|t| t.0.contains("2 of the files")), "{:?}", app.toast);
+    }
 
     /// Extracted images are named after the document without the image extension it kept, in
     /// any case (S5 review M4).
