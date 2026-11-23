@@ -7,6 +7,7 @@ mod support {
 mod dingbat_check_box;
 mod document_fonts;
 mod esign_graphic;
+mod esign_prepare;
 mod form_rotation;
 mod marked_content_isolation;
 mod ocr_edit;
