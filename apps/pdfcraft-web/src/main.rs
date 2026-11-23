@@ -5,6 +5,8 @@
 
 #[cfg(any(target_arch = "wasm32", test))]
 mod api;
+#[cfg(any(target_arch = "wasm32", test))]
+mod sign_host;
 
 #[cfg(target_arch = "wasm32")]
 fn main() {
@@ -66,6 +68,12 @@ fn main() {
                         app.host_save = Some(bridge.save_fn());
                         app.host_share = Some(bridge.share_fn());
                         app.host_dirty = Some(bridge.dirty_fn());
+                        // The signature-request messages, on a listener of their own (`sign_host`);
+                        // `sign` is read from the raw `pdfcraft:host`, so it listens before `ready`.
+                        if let Some(sign) = sign_host::SignHost::connect() {
+                            sign.listen(app.host_sign.clone(), cc.egui_ctx.clone());
+                            app.host_sign_post = Some(sign.post_fn());
+                        }
                         bridge.post_ready();
                     } else if query_param("host").as_deref() == Some("parent") {
                         eframe::web_sys::console::warn_1(

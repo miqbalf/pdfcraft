@@ -3,6 +3,11 @@ use super::*;
 impl PdfCraftApp {
     /// Run a catalogue command. Commands that aren't implemented yet say which milestone ships them.
     pub fn run_command(&mut self, command: &str) {
+        // Commands the hosting page offers (Request signatures…).
+        if self.host_command_registered(command) {
+            self.execute(command);
+            return;
+        }
         if let Some(spec) = pdfcraft_engine::commands::command(command) {
             use pdfcraft_engine::commands::Needs;
             // A tool that needs a document, chosen with none open, asks for the file and then

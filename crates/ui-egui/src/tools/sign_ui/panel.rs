@@ -71,7 +71,15 @@ pub enum PanelAction {
 }
 
 /// The Signatures panel body.
-pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, sigs: &[SignatureInfo], expanded: &mut Vec<String>) -> Option<PanelAction> {
+/// `host_roots`: the certificates (DER) the hosting Nextcloud asked to trust for this session; a
+/// valid signature whose chain reaches one says it is trusted by this Nextcloud.
+pub(crate) fn panel(
+    ui: &mut egui::Ui,
+    t: &Tokens,
+    sigs: &[SignatureInfo],
+    expanded: &mut Vec<String>,
+    host_roots: &[Vec<u8>],
+) -> Option<PanelAction> {
     let mut action = None;
     ui.horizontal(|ui| {
         if widgets::pill_button(ui, tl!("Validate all"), false).clicked() {
@@ -136,6 +144,11 @@ pub(crate) fn panel(ui: &mut egui::Ui, t: &Tokens, sigs: &[SignatureInfo], expan
                 })
                 .font(theme::semibold(12.0)),
             );
+            let by_host = |c: &Certificate| host_roots.contains(&c.raw);
+            if s.status == SignatureStatus::Valid && (s.certificate.iter().any(by_host) || s.chain.iter().any(by_host)) {
+                let words = crate::i18n::fmt(tl!("Trusted ({who})"), &[("who", tl!("this Nextcloud"))]);
+                ui.label(egui::RichText::new(format!("• {words}")).font(theme::semibold(11.5)).color(t.accent_text));
+            }
             for detail in &s.details {
                 // Each detail is a whole sentence of ours plus what the signature itself says; said
                 // here in the panel's language, with the signature's own words left as they are.

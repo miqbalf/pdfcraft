@@ -3263,6 +3263,8 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     if close_requested_tab(app, index) {
         return;
     }
+    // Sign or request mode for a Nextcloud signature request: its banner above the page.
+    crate::sign_request::banner(app, index, ui);
     let Some(doc) = app.session.get(app.views[index].id) else { return };
     let info = &doc.info;
     let paper = app.session.reading_colors(app.views[index].id).and_then(|c| c.params).map_or(Color32::WHITE, |p| {
@@ -3385,20 +3387,23 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let sharp_held = hold_sharp_renders(ui, view, scale);
     view.current_scale_tag = tag;
     let hand = app.quick_tool == QuickTool::Hand;
-    let (tool, placing) = page_tool(view, app.quick_tool);
+    // A document open for a signature request is read-only: no tool edits it, and its comments,
+    // fields and pages take no changes (`sign_request::overlay` takes the signer's clicks).
+    let esign_locked = app.esign.locks(view.id);
+    let (tool, placing) = page_tool(view, if esign_locked { QuickTool::Select } else { app.quick_tool });
     // Text selection runs for the Select tool and for the markup tools (highlight…).
     let selects_text = tool_selects_text(tool, preparing);
     let prefs = &app.comment_prefs;
     let redact_mark = (app.redact_prefs.hover_fill, app.redact_prefs.opacity);
     let units = app.units;
-    let allowed = doc.allows_annotation();
+    let allowed = doc.allows_annotation() && !esign_locked;
     let can_copy = doc.allows_copying();
-    let can_paste_comments = app.comment_clipboard.is_some();
+    let can_paste_comments = app.comment_clipboard.is_some() && !esign_locked;
     let comments_hidden = doc.comments_hidden();
     let form = doc.form.clone();
     let generation = doc.edit_generation();
-    let can_fill = doc.allows_form_filling();
-    let can_crop = doc.allows_assembly();
+    let can_fill = doc.allows_form_filling() && !esign_locked;
+    let can_crop = doc.allows_assembly() && !esign_locked;
     let signature = app.signature.clone();
     let initials = app.initials.clone();
     let author = app.comment_prefs.author.clone();
@@ -3415,7 +3420,7 @@ pub fn document_area(app: &mut PdfCraftApp, index: usize, ui: &mut egui::Ui) {
     let mut recolour: Option<pdfcraft_engine::Rgb> = None;
     // The table being set up in its window, shown on its own document's page.
     let table_preview = app.field_table_draft.as_mut().filter(|d| d.doc == view.id).and_then(|d| Some(d.preview(info.pages.get(d.page)?, &form)));
-    let can_modify = doc.allows_modification();
+    let can_modify = doc.allows_modification() && !esign_locked;
     if preparing {
         crate::prepare::after_refresh(view, &form);
     } else {

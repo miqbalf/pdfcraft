@@ -223,10 +223,11 @@ fn table_rect(xf: &PageXform, r: Rect) -> [f64; 4] {
     [x0, y0, x1, y1].map(f64::from)
 }
 
-/// A screen rect → a normalised user-space rect.
-fn user_rect(xf: &PageXform, info: &DocInfo, page: usize, r: Rect) -> [f64; 4] {
-    let (a, b) = (to_user(xf, info, page, r.min), to_user(xf, info, page, r.max));
-    [a[0].min(b[0]), a[1].min(b[1]), a[0].max(b[0]), a[1].max(b[1])]
+/// A screen rect → a normalised user-space rect. Request mode's signer boxes are drawn with it too
+/// (`sign_request`), so a box lands in user space on a turned page as a field does.
+pub(crate) fn user_rect(xf: &PageXform, info: &DocInfo, page: usize, r: Rect) -> [f64; 4] {
+    let (a, b) = (xf.screen_to_view(r.min), xf.screen_to_view(r.max));
+    crate::sign_request::view_box_to_user(&info.pages[page], [a.0, a.1, b.0, b.1])
 }
 
 fn handles(r: Rect) -> [(Pos2, bool, bool); 4] {

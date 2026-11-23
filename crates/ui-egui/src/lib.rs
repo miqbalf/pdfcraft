@@ -134,7 +134,10 @@ use dialogs::rename_ui;
 use dialogs::standards_ui;
 use dialogs::word_count_ui;
 pub use home::folders_ui;
-pub use hooks::{FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, HostShareFn, HostShares, Inbox, OsEvent, OsEventsFn};
+pub use hooks::{
+    FailedInbox, HostAnswer, HostDirtyFn, HostSaveFn, HostSaves, HostShareFn, HostShares, HostSign, HostSignFn, Inbox, OsEvent, OsEventsFn,
+    SignHostEvent,
+};
 use menus::tab_context;
 use panels::all_tools_ui;
 use panels::comments_panel;
@@ -191,6 +194,7 @@ use tools::measure_ui;
 use tools::object_ui;
 pub use tools::prepare;
 use tools::redact_ui;
+pub use tools::sign_request;
 use tools::sign_ui;
 use tools::stamps_ui;
 use tools::tags_ui;
@@ -601,6 +605,13 @@ pub struct PdfCraftApp {
     /// The document the host opened in the frame: the one file it can share. Kept by id, so a
     /// host save under another name keeps it, and another document of the same name is not it.
     pub host_doc: Option<DocId>,
+    /// Whether the host offers signature requests, and its sign-mode and request-mode messages
+    /// ([`HostSign`]).
+    pub host_sign: HostSign,
+    /// Posts the signature-request messages to the embedding page (web, see [`HostSignFn`]).
+    pub host_sign_post: Option<HostSignFn>,
+    /// Sign mode or request mode for a Nextcloud signature request (`tools/sign_request.rs`).
+    pub(crate) esign: sign_request::Esign,
     /// Set while a file the host handed over is being opened from the startup inbox: the open
     /// carries it as a tag (its password prompt, its pending open) to the document it adds.
     opening_from_host: bool,

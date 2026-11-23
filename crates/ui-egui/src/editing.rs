@@ -176,6 +176,10 @@ impl PdfCraftApp {
     /// Apply an edit to the active document. Returns `true` on success; failures are shown.
     pub fn apply_edit(&mut self, edit: Edit) -> bool {
         let Some((i, id)) = self.active_ids() else { return false };
+        if self.esign_locked(id) {
+            self.notify_tr("This document is open for signing and can't be changed");
+            return false;
+        }
         // Taken whatever happens to this edit, so it never carries over to another.
         let across_pages = std::mem::take(&mut self.views[i].marks_across_pages).filter(|_| annotated_pages(&edit).is_some());
         let label = edit.label();

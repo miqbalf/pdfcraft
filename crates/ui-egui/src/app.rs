@@ -215,6 +215,9 @@ impl PdfCraftApp {
             host_share: None,
             host_shares: Default::default(),
             host_doc: None,
+            host_sign: Default::default(),
+            host_sign_post: None,
+            esign: Default::default(),
             opening_from_host: false,
             #[cfg(not(target_arch = "wasm32"))]
             share_lookup: |_| craft_share::ShareRoute::None,
@@ -719,6 +722,8 @@ impl PdfCraftApp {
                 }
             }
         }
+        // Sign and request mode bind to the host's document once it is open.
+        self.process_host_sign();
         let failed: Vec<(String, String)> = self.failed_inbox.lock().map(|mut q| std::mem::take(&mut *q)).unwrap_or_default();
         for (name, e) in failed {
             self.notify_fmt("Couldn't open {name}: {e}", &[("name", &name), ("e", &e)]);

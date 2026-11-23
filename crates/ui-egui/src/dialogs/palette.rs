@@ -77,6 +77,17 @@ pub fn show(app: &mut PdfCraftApp, ctx: &egui::Context) {
             ));
         }
     }
+    // Commands the hosting page offers (Request signatures…), only while it offers them.
+    let has_document = app.active_ids().is_some();
+    for c in app.host_commands() {
+        let translated = tl!(c.label).to_string();
+        if let Some(s) = score(&translated, &q).or_else(|| score(c.label, &q)).or_else(|| score(c.id, &q).map(|s| s + 50)) {
+            hits.push((
+                s,
+                Hit { group: None, label: translated, detail: tl!("Command").to_string(), icon: c.icon, command: Some(c.id), ready: has_document },
+            ));
+        }
+    }
     for g in TOOL_GROUPS {
         if let Some(s) = score(tl!(g.label), &q).or_else(|| score(g.label, &q)) {
             hits.push((

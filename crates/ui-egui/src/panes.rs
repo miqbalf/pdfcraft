@@ -532,7 +532,10 @@ fn main_pane(app: &mut PdfCraftApp, main: Option<usize>, ui: &mut egui::Ui) {
         None => crate::home::show(app, ui),
         Some(index) => match crate::compare_ui::side_by_side(app, index) {
             Some((old, new)) => crate::compare_ui::compare_area(app, old, new, ui),
-            None => crate::canvas::document_area(app, index, ui),
+            None => {
+                crate::canvas::document_area(app, index, ui);
+                crate::sign_request::overlay(app, index, ui);
+            }
         },
     }
 }
@@ -611,7 +614,10 @@ fn pane(app: &mut PdfCraftApp, ui: &mut egui::Ui, rect: Rect, place: Place, fron
     app.panes.drawing = place;
     match (place, front) {
         (Place::Main, _) => main_pane(app, front, &mut body_ui),
-        (Place::Second, Some(index)) => crate::canvas::document_area(app, index, &mut body_ui),
+        (Place::Second, Some(index)) => {
+            crate::canvas::document_area(app, index, &mut body_ui);
+            crate::sign_request::overlay(app, index, &mut body_ui);
+        }
         (Place::Second, None) => {}
     }
     app.panes.drawing = Place::Main;

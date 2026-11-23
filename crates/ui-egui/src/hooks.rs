@@ -123,3 +123,58 @@ impl HostShares {
         })
     }
 }
+
+/// What the host page asks of PdfCraft for a Nextcloud signature request (web,
+/// `pdfcraft:sign-mode` and `pdfcraft:sign-request-mode`). The web shell checks and bounds each
+/// message before it becomes one of these.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignHostEvent {
+    /// Sign mode: the document is read-only, `field` (on 0-based `page`) is the signer's,
+    /// `others` are the other signers' fields, `banner` is shown above the page, and
+    /// `trust_roots` (PEM) are trusted as "this Nextcloud" for this session.
+    SignMode { request_id: u64, field: String, page: usize, others: Vec<String>, banner: String, trust_roots: Vec<String> },
+    /// Request mode: one box per listed signer, `(position, name)`.
+    RequestMode { signers: Vec<(u32, String)> },
+}
+
+#[derive(Default)]
+struct HostSignState {
+    offered: bool,
+    events: Vec<SignHostEvent>,
+}
+
+/// What the host page tells the app about signature requests, shared between the web shell's
+/// listener and the app (a cheap clone): whether it offers them (`sign` in `pdfcraft:host`), and
+/// the sign-mode and request-mode messages, which the app reads each frame.
+#[derive(Clone, Default)]
+pub struct HostSign(std::sync::Arc<std::sync::Mutex<HostSignState>>);
+
+impl HostSign {
+    fn with<R>(&self, f: impl FnOnce(&mut HostSignState) -> R) -> R {
+        f(&mut self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    }
+
+    /// The host said whether it offers signature requests: its latest `sign`.
+    pub fn set_offered(&self, offered: bool) {
+        self.with(|s| s.offered = offered);
+    }
+
+    pub fn offered(&self) -> bool {
+        self.with(|s| s.offered)
+    }
+
+    /// A message from the host, for the app's next frame.
+    pub fn push(&self, event: SignHostEvent) {
+        self.with(|s| s.events.push(event));
+    }
+
+    /// The messages that arrived since the last call.
+    pub fn take_events(&self) -> Vec<SignHostEvent> {
+        self.with(|s| std::mem::take(&mut s.events))
+    }
+}
+
+/// Posts one app → host message (`pdfcraft:sign-mark`, `-placements` or `-request`), its `type`
+/// included, to the same-origin page embedding PdfCraft. Set by the web app when a host page is
+/// connected.
+pub type HostSignFn = Box<dyn Fn(serde_json::Value) -> Result<(), String>>;

@@ -1492,17 +1492,9 @@ fn dialog_signature(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending)
         app.pick_signature_image();
     }
     if req.apply {
-        let d = std::mem::take(&mut app.signature_draft);
-        let tool = if d.initials {
-            app.initials = d.saved();
-            crate::fill_sign::FillTool::Initials
-        } else {
-            app.signature = d.saved();
-            crate::fill_sign::FillTool::Signature
-        };
-        app.fill_tool = tool;
-        app.quick_tool = crate::QuickTool::Fill(tool);
-        app.toast = None;
+        app.signature_pad_applied();
+    } else if cancel {
+        app.sign_pick_cancelled();
     }
     req.close = req.apply || cancel;
     false

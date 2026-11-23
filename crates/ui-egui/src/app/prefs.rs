@@ -76,7 +76,14 @@ impl PdfCraftApp {
 
     /// Serialize the user's persistent state (recent files, theme). Local only.
     pub fn persist(&self) -> String {
-        let trusted: Vec<String> = self.session.trusted_certificates().iter().map(pdfcraft_engine::sign::x509::to_pem).collect();
+        // The host's roots ("this Nextcloud") are trusted for its session only.
+        let trusted: Vec<String> = self
+            .session
+            .trusted_certificates()
+            .iter()
+            .filter(|c| !self.esign.host_trusted(&c.raw))
+            .map(pdfcraft_engine::sign::x509::to_pem)
+            .collect();
         // The Print dialog's choices that describe how this computer prints (#2001), named as
         // `doc_print` names them. Copies, pages, layout and orientation are one job's.
         let print = serde_json::json!({

@@ -94,6 +94,9 @@ pub struct SigDraft {
     pub initials: bool,
     /// Replacing an existing saved value.
     pub editing: bool,
+    /// Picking the mark for a Nextcloud signature request: Apply says Done, and the mark goes to
+    /// the host instead of being saved.
+    pub for_request: bool,
 }
 
 impl SigDraft {
@@ -852,7 +855,8 @@ fn pad_buttons(ui: &mut egui::Ui, d: &mut SigDraft) -> (bool, bool) {
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let ready = d.ready();
-            if ui.add_enabled_ui(ready, |ui| crate::widgets::pill_button(ui, tl!("Apply"), true)).inner.clicked() {
+            let label = if d.for_request { tl!("Done") } else { tl!("Apply") };
+            if ui.add_enabled_ui(ready, |ui| crate::widgets::pill_button(ui, label, true)).inner.clicked() {
                 apply = true;
             }
             if crate::widgets::pill_button(ui, tl!("Cancel"), false).clicked() {
