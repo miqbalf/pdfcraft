@@ -39,6 +39,12 @@ const MAX_HEAD: usize = 16 * 1024;
 const MAX_SEALS: usize = 30;
 const SEAL_WINDOW: Duration = Duration::from_secs(10);
 
+/// The least HMAC secret taken, in bytes (`occ craft_office:sign-setup` makes longer ones).
+const MIN_SECRET: usize = 32;
+/// Each connection's thread stack: a deeply nested hostile PDF must not overflow it, since a
+/// stack overflow aborts the whole worker where a panic does not.
+const CONNECTION_STACK: usize = 8 << 20;
+
 /// The instance and organisation the final seal's reason names when the request does not.
 const DEFAULT_INSTANCE: &str = "workspace.treeo.id";
 const DEFAULT_ORGANISATION: &str = "PT Solusi Hutan Digital";
@@ -117,18 +123,18 @@ fn options(args: &[String]) -> Result<Options, CliError> {
     })
 }
 
-fn log(line: std::fmt::Arguments<'_>) {
+pub(crate) fn log(line: std::fmt::Arguments<'_>) {
     let _ = writeln!(std::io::stderr().lock(), "seal-worker: {line}");
 }
 
-/// Refuse a secret file that group or others may read, unless `insecure_dev`.
+/// Refuse a secret file that group or others may read or change, unless `insecure_dev`.
 #[cfg(unix)]
 fn private(path: &Path, insecure_dev: bool) -> Result<(), CliError> {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = std::fs::metadata(path) else { return Ok(()) };
-    if meta.permissions().mode() & 0o044 != 0 && !insecure_dev {
+    if meta.permissions().mode() & 0o066 != 0 && !insecure_dev {
         return Err(format!(
-            "seal-worker: {} can be read by group or others; make it readable by this user only (chmod 600), or pass --insecure-dev",
+            "seal-worker: {} can be read or changed by group or others; make it this user's only (chmod 600), or pass --insecure-dev",
             path.display()
         )
         .into());
@@ -179,6 +185,12 @@ fn load_key(key_file: &Path, password_file: &Path) -> Result<Key, &'static str> 
 /// `pdfcraft-cli seal-worker …`: load the key and secret, listen, and serve until killed.
 pub fn run(args: &[String]) -> Result<(), CliError> {
     let o = options(args)?;
+    // A panic's message can quote its input; only where it happened is logged. The call that
+    // panicked is answered by `connection`.
+    std::panic::set_hook(Box::new(|info| {
+        let at = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        log(format_args!("a call failed inside the worker (panic at {at}); its message is not logged"));
+    }));
     for path in [&o.secret_file, &o.key_file, &o.key_password_file] {
         private(path, o.insecure_dev)?;
     }
@@ -186,8 +198,8 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
     while secret.last().is_some_and(u8::is_ascii_whitespace) {
         secret.pop();
     }
-    if secret.is_empty() {
-        return Err("seal-worker: the secret file is empty".into());
+    if secret.len() < MIN_SECRET {
+        return Err(format!("seal-worker: the secret is shorter than {MIN_SECRET} bytes; use the one occ craft_office:sign-setup made").into());
     }
     let key = match load_key(&o.key_file, &o.key_password_file) {
         Ok(k) => {
@@ -266,7 +278,7 @@ fn serve(listener: &TcpListener, worker: &Arc<Worker>) {
         let slot = Slot(slots.clone());
         let Ok((stream, _)) = listener.accept() else { continue };
         let worker = worker.clone();
-        let spawned = std::thread::Builder::new().name("seal-worker-conn".into()).spawn(move || {
+        let spawned = std::thread::Builder::new().name("seal-worker-conn".into()).stack_size(CONNECTION_STACK).spawn(move || {
             let _slot = slot;
             connection(stream, &worker);
         });
@@ -311,12 +323,17 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (ReadError, Option<St
     let deadline = Instant::now() + READ_TIMEOUT;
     let mut head = Vec::with_capacity(4096);
     let mut chunk = [0u8; 8192];
+    let too_large = || (ReadError::Answer(431, "bad_request", "The request headers are too large."), None);
     let end = loop {
+        // A whole head that arrived in one read is measured too, not only one still coming.
         if let Some(i) = head.windows(4).position(|w| w == b"\r\n\r\n") {
+            if i + 4 > MAX_HEAD {
+                return Err(too_large());
+            }
             break i + 4;
         }
         if head.len() > MAX_HEAD {
-            return Err((ReadError::Answer(431, "bad_request", "The request headers are too large."), None));
+            return Err(too_large());
         }
         let n = read_some(stream, &mut chunk, deadline).map_err(|e| (e, None))?;
         head.extend_from_slice(chunk.get(..n).unwrap_or_default());
@@ -340,7 +357,11 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (ReadError, Option<St
     let lengths = header("content-length");
     let length = match lengths.as_slice() {
         [] => 0,
-        [one] => one.parse::<usize>().map_err(|_| fail(400, "bad_request", "The Content-Length is not a number."))?,
+        [one] if !one.is_empty() && one.bytes().all(|c| c.is_ascii_digit()) => {
+            // Digits too many for memory are too large, not malformed.
+            one.parse::<usize>().unwrap_or(usize::MAX)
+        }
+        [_] => return Err(fail(400, "bad_request", "The Content-Length is not a number.")),
         _ => return Err(fail(400, "bad_request", "The request has more than one Content-Length.")),
     };
     if length > MAX_BODY {

@@ -420,32 +420,158 @@ fn http_tsa_refused_without_insecure_dev() {
     assert_eq!(r.json()["error"], "tsa_unavailable");
 }
 
+/// Start a worker in `dir` and wait for it to exit; its stderr. Fails if it starts listening.
+fn refused_start(dir: &Path, why: &str) -> String {
+    let mut child = command(dir, &[]).spawn().expect("spawns");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("waits") {
+            break s;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("{why}: the worker started");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!status.success(), "{why}");
+    assert!(!dir.join("port").exists(), "{why}: it never listened");
+    std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default()
+}
+
+/// A key, password or secret file that group or others can read or change stops the start
+/// (P5 review m10: write bits too), unless --insecure-dev.
 #[cfg(unix)]
 #[test]
 fn world_readable_key_refuses_to_start() {
     for file in ["seal.p12", "seal_password", "seal_hmac"] {
-        let dir = workdir("readable");
+        for mode in [0o644, 0o604, 0o620, 0o602] {
+            let dir = workdir("readable");
+            secrets(&dir, "test");
+            chmod(&dir.join(file), mode);
+            let why = format!("{file} {mode:o}");
+            assert!(refused_start(&dir, &why).contains("group or others"), "{why}: says why");
+        }
+        // --insecure-dev lets it start.
+        let dir = workdir("readable-dev");
         secrets(&dir, "test");
         chmod(&dir.join(file), 0o644);
-        let mut child = command(&dir, &[]).spawn().expect("spawns");
-        let deadline = Instant::now() + Duration::from_secs(60);
-        let status = loop {
-            if let Some(s) = child.try_wait().expect("waits") {
-                break s;
-            }
-            if Instant::now() > deadline {
-                let _ = child.kill();
-                panic!("{file}: the worker started with a readable file");
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
-        assert!(!status.success(), "{file}");
-        assert!(!dir.join("port").exists(), "{file}: it never listened");
-        assert!(std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default().contains("group or others"), "{file}: says why");
-        // --insecure-dev lets it start.
         let w = start_in(&dir, &["--insecure-dev"]);
         assert_eq!(w.get("/v1/health").status, 200);
     }
+}
+
+#[test]
+fn a_short_secret_refuses_to_start() {
+    let dir = workdir("short-secret");
+    secrets(&dir, "test");
+    std::fs::write(dir.join("seal_hmac"), "x".repeat(31)).expect("secret");
+    #[cfg(unix)]
+    chmod(&dir.join("seal_hmac"), 0o600);
+    assert!(refused_start(&dir, "a 31-byte secret").contains("shorter than"));
+}
+
+#[test]
+fn seal_calls_past_the_rate_limit_are_429() {
+    let w = start("ratelimit", &[]);
+    // Malformed seal calls are cheap, and the limit counts every authenticated seal call.
+    let statuses: Vec<u16> = (0..31).map(|_| w.post("/v1/seal", &json!({})).status).collect();
+    assert!(statuses[..30].iter().all(|s| *s == 400), "{statuses:?}");
+    assert_eq!(statuses[30], 429, "one past the limit");
+    assert_eq!(w.get("/v1/health").status, 200, "other calls are not limited");
+}
+
+#[test]
+fn a_chunked_body_is_411() {
+    let w = start("chunked", &[]);
+    let r = w.raw(b"POST /v1/inspect HTTP/1.1\r\nHost: seal\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n");
+    assert_eq!(r.status, 411);
+    assert_eq!(r.json()["error"], "bad_request");
+}
+
+#[test]
+fn an_oversize_head_is_431() {
+    let w = start("bighead", &[]);
+    let r = w.raw(format!("GET /v1/health HTTP/1.1\r\nX-Pad: {}\r\n\r\n", "a".repeat(20_000)).as_bytes());
+    assert_eq!(r.status, 431);
+}
+
+#[test]
+fn a_request_that_stops_arriving_is_dropped() {
+    let w = start("slow", &[]);
+    let mut s = TcpStream::connect(("127.0.0.1", w.port)).expect("connects");
+    s.write_all(b"GET /v1/health HTTP/1.1\r\nHost: se").expect("sends half a head");
+    s.set_read_timeout(Some(Duration::from_secs(90))).expect("timeout");
+    let mut out = Vec::new();
+    let read = s.read_to_end(&mut out);
+    assert!(read.is_ok(), "the worker closed the connection (not our own timeout): {read:?}");
+    assert!(out.is_empty(), "with no answer");
+    assert_eq!(w.get("/v1/health").status, 200, "and serves the next");
+}
+
+#[test]
+fn a_ninth_connection_waits_for_a_free_slot() {
+    let w = start("cap", &[]);
+    // Eight connections that never finish their request hold every slot.
+    let holders: Vec<TcpStream> = (0..8)
+        .map(|_| {
+            let mut s = TcpStream::connect(("127.0.0.1", w.port)).expect("connects");
+            s.write_all(b"GET /v1/health HTTP/1.1\r\n").expect("sends");
+            s
+        })
+        .collect();
+    let mut ninth = TcpStream::connect(("127.0.0.1", w.port)).expect("connects (backlog)");
+    let n = nonce();
+    let t = now();
+    let mac = hmac(&format!("GET\n/v1/health\n{}\n{t}\n{n}", sha(b"")));
+    let req = format!("GET /v1/health HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {t}\r\nX-Craft-Seal-Nonce: {n}\r\nX-Craft-Seal-Mac: {mac}\r\n\r\n");
+    ninth.write_all(req.as_bytes()).expect("sends");
+    ninth.set_read_timeout(Some(Duration::from_secs(3))).expect("timeout");
+    let mut buf = [0u8; 64];
+    assert!(ninth.read(&mut buf).is_err(), "no answer while eight connections are open");
+    drop(holders);
+    ninth.set_read_timeout(Some(Duration::from_secs(30))).expect("timeout");
+    let mut out = Vec::new();
+    ninth.read_to_end(&mut out).expect("answered once a slot is free");
+    assert!(out.starts_with(b"HTTP/1.1 200"), "{}", String::from_utf8_lossy(&out));
+}
+
+#[test]
+fn a_placement_rect_with_a_non_number_is_refused() {
+    let w = start("rect", &[]);
+    let mut body = prepare_body(&blank());
+    body["signers"][1]["placement"]["rect"] = json!([100, "x", 100, 280, 140]);
+    let r = w.post("/v1/prepare", &body);
+    assert_eq!(r.status, 400, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["error"], "bad_json");
+}
+
+/// A hostile PDF nested very deep is refused or read; it never takes the worker down.
+#[test]
+fn a_deeply_nested_pdf_does_not_take_the_worker_down() {
+    let w = start("deep", &[]);
+    let depth = 50_000;
+    let body = format!("<< /Type /Catalog /Pages 2 0 R /X {}{} >>", "[".repeat(depth), "]".repeat(depth));
+    let objs = [body, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(), "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>".to_string()];
+    let mut pdf = b"%PDF-1.7\n".to_vec();
+    let mut offsets = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 4\n0000000000 65535 f \n");
+    for o in offsets {
+        pdf.extend_from_slice(format!("{o:010} 00000 n \n").as_bytes());
+    }
+    pdf.extend_from_slice(format!("trailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n").as_bytes());
+    for path in ["/v1/inspect", "/v1/prepare"] {
+        let mut body = prepare_body(&pdf);
+        body["pdf"] = json!(b64(&pdf));
+        let r = w.post(path, &body);
+        assert!([200, 422].contains(&r.status), "{path}: {}", r.status);
+    }
+    assert_eq!(w.get("/v1/health").status, 200, "still up");
 }
 
 #[test]

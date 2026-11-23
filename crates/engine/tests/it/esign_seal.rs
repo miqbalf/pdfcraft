@@ -453,12 +453,29 @@ fn inspect_trusting_the_seal_root_agrees_with_the_seal() {
 }
 
 /// A PDF with a signature field of its own, left unsigned, prepared for the three signers.
-fn prepared_with_own_signature_field() -> Vec<u8> {
+fn prepared_with_own_signature_field(with_look: bool) -> Vec<u8> {
     let mut s = Session::new().with_clock(|| 1_700_000_000);
     let id = s.open("x.pdf", None, Arc::new(form()), None).expect("opens");
     let add = Edit::AddField { page: 0, rect: [320.0, 600.0, 500.0, 650.0], kind: NewField::Signature, name: Some("Witness".into()) };
     s.apply(id, add).expect("adds");
-    let source = s.save_bytes(id).expect("saves").to_vec();
+    let mut source = s.save_bytes(id).expect("saves").to_vec();
+    if with_look {
+        // A "sign here" box of its own, as forms made elsewhere carry: an unsigned signature
+        // field with a normal appearance (P5 review m9).
+        use pdfcraft_cos::{Lexer, Object, Stream};
+        let mut cos = pdfcraft_cos::Document::open(Arc::new(source.clone())).expect("reopens");
+        let widget = pdfcraft_forms::fields(&cos).into_iter().find(|f| f.name == "Witness").expect("Witness").obj;
+        let bbox = Lexer::new(b"<< /Type /XObject /Subtype /Form /BBox [0 0 180 50] >>", 0).object().expect("dict");
+        let look = cos.add(Object::Stream(Stream::from_raw(
+            bbox.as_dict().expect("dict").clone(),
+            b"0.9 0.9 0.6 rg 0 0 180 50 re f 0 g 1 w 4 4 172 42 re S".to_vec(),
+        )));
+        let ap = Lexer::new(format!("<< /N {look} >>").as_bytes(), 0).object().expect("dict");
+        cos.update_dict(widget, |d| d.set(b"AP".to_vec(), ap.clone())).expect("sets /AP");
+        let out = write_incremental(&cos, &SaveOptions { object_streams: false, ..SaveOptions::default() }).expect("writes");
+        assert!(out.starts_with(&source));
+        source = out.to_vec();
+    }
     let slots: Vec<SignerSlot> = SIGNERS
         .iter()
         .enumerate()
@@ -472,20 +489,26 @@ fn prepared_with_own_signature_field() -> Vec<u8> {
 /// sound.
 #[test]
 fn the_source_pdf_s_unsigned_signature_fields_are_read_only_after_final_seal() {
-    let mut bytes = prepared_with_own_signature_field();
+    for with_look in [false, true] {
+        source_signature_field_read_only_after_final_seal(with_look);
+    }
+}
+
+fn source_signature_field_read_only_after_final_seal(with_look: bool) {
+    let mut bytes = prepared_with_own_signature_field(with_look);
     let own = |b: &[u8]| fields(b).into_iter().find(|f| f.name == "Witness").expect("the PDF's own signature field");
     assert!(!own(&bytes).read_only(), "before the request ends it can be signed");
     let mut last = None;
     for p in 1..=3 {
-        let out = seal_one(&bytes, p, p == 3, None).expect("seals");
+        let out = seal_one(&bytes, p, p == 3, None).unwrap_or_else(|e| panic!("with_look {with_look}: signer {p}: {e:?}"));
         bytes = out.bytes.clone();
         last = Some(out);
     }
-    assert!(own(&bytes).read_only(), "read-only after the final seal");
+    assert!(own(&bytes).read_only(), "read-only after the final seal (with_look {with_look})");
     let last = last.expect("sealed");
     for s in last.signatures.iter().filter(|s| s.signed) {
-        assert_eq!(s.status, "valid", "{s:?}");
-        assert_ne!(s.modification, "disallowed", "{s:?}");
+        assert_eq!(s.status, "valid", "with_look {with_look}: {s:?}");
+        assert_ne!(s.modification, "disallowed", "with_look {with_look}: {s:?}");
     }
     assert!(last.signatures.iter().any(|s| s.field == "Witness" && !s.signed), "still listed, still unsigned");
 }

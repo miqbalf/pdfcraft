@@ -198,7 +198,8 @@ fn placement(v: Option<&Value>) -> Field<Option<Placement>> {
     let Some(v) = v.filter(|v| !v.is_null()) else { return Ok(None) };
     let p = object(v, "A signer's placement")?;
     let page = uint(&p, "page").and_then(|n| usize::try_from(n).map_err(|_| bad_json("A placement's page is too large.")))?;
-    let rect: Option<Vec<f64>> = p.get("rect").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_f64).collect());
+    // Every element a number: one that is not refuses the rect, it is never skipped.
+    let rect: Option<Vec<f64>> = p.get("rect").and_then(Value::as_array).and_then(|a| a.iter().map(Value::as_f64).collect());
     let rect = rect.and_then(|r| <[f64; 4]>::try_from(r).ok()).ok_or_else(|| bad_json("A placement's rect is not four numbers."))?;
     Ok(Some(Placement { page, rect }))
 }
@@ -354,6 +355,9 @@ fn seal_with(worker: &Worker, key: &Key, call: &SealCall) -> Reply {
         row_text: &call.row_text,
         date: &call.date,
     };
+    if call.final_seal.as_ref().is_some_and(|f| f.instance.is_none() || f.organisation.is_none()) {
+        super::log(format_args!("request {}: final seal without instance or organisation; the worker's own names are used", call.request_id));
+    }
     let fin = call.final_seal.as_ref().map(|f| FinalSeal {
         completed_text: &f.completed_text,
         date: &f.date,
