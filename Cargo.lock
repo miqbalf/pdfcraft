@@ -5014,6 +5014,7 @@ dependencies = [
  "pdfcraft-platform",
  "pdfcraft-prc-render",
  "pdfcraft-render",
+ "pdfcraft-sign",
  "pdfcraft-xfa",
  "rustix 1.1.6",
  "serde_json",
@@ -5116,6 +5117,7 @@ dependencies = [
 name = "pdfcraft-engine"
 version = "0.21.1"
 dependencies = [
+ "base64 0.23.1",
  "chrono",
  "craft-cms 0.1.0 (git+https://github.com/storytold/craft-libs?rev=e2dc681a3)",
  "craft-docpath",
@@ -5154,6 +5156,7 @@ dependencies = [
  "pdfcraft-xfa",
  "pdfcraft-xfdf",
  "rustix 1.1.6",
+ "serde_json",
  "thiserror 2.0.21",
  "unicode-segmentation",
  "url",
