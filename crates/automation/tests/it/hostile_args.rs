@@ -420,6 +420,27 @@ fn graphic_from_json_survives_hostile_input() {
             other => failures.push(format!("not refused as a bad graphic: {other:?}")),
         }
     }
+    // Marks on the edge of every cap are accepted and drawn.
+    let side = 1024u32;
+    let pixels: Vec<u8> = (0..side * side * 4).map(|i| (i % 251) as u8).collect();
+    let image = craft_image_codecs::Image::from_u8(side, side, craft_image_codecs::ChannelLayout::Rgba, pixels).expect("image");
+    let png = craft_image_codecs::encode(&image, craft_image_codecs::Format::Png, &craft_image_codecs::EncodeOptions::default()).expect("encode");
+    let edges = [
+        json!({ "kind": "strokes", "strokes": [[[-1000.0, 1000.0], [1000.0, -1000.0]]] }),
+        json!({ "kind": "strokes", "strokes": vec![stroke(2000); 64] }),
+        json!({ "kind": "typed", "text": "W".repeat(100) }),
+        json!({ "kind": "image", "png": b64(&png) }),
+    ];
+    for v in &edges {
+        match call(v) {
+            Ok(Ok(g)) => {
+                if let Err(e) = draws(&g) {
+                    failures.push(e);
+                }
+            }
+            other => failures.push(format!("an edge mark was not accepted: {other:?}")),
+        }
+    }
     assert!(failures.is_empty(), "{} failure(s); the first is: {}", failures.len(), failures.first().map_or("", String::as_str));
 }
 
