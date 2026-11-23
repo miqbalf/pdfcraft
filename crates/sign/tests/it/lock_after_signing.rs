@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use pdfcraft_cos::{Dict, Document, ObjRef, Object, PdfString, SaveOptions, write_incremental};
 use pdfcraft_sign::dss::{self, Evidence};
-use pdfcraft_sign::{FieldLock, Modification, SignOptions, SignatureInfo, Status, Time, TrustStore, pkcs12, signatures};
+use pdfcraft_sign::{FieldLock, LockAction, Modification, SignOptions, SignatureInfo, Status, Time, TrustStore, pkcs12, signatures};
 
 use crate::pdf::{TestTsa, tsa_id};
 
@@ -129,6 +129,9 @@ fn assert_whole_document_lock(bytes: &[u8], name: &str) {
     assert_eq!(field_mdp[0].name(b"Type"), Some(&b"SigRef"[..]));
     let params = resolved_dict(&doc, &field_mdp[0], b"TransformParams").unwrap();
     assert_eq!(params.name(b"Action"), Some(&b"All"[..]));
+    // `/Data`, required for FieldMDP (ISO 32000 signature reference dictionary): the object the
+    // modification analysis starts from, the catalog.
+    assert_eq!(field_mdp[0].get(b"Data").and_then(Object::as_ref), doc.root(), "FieldMDP /Data is the catalog");
     let catalog = doc.get(doc.root().unwrap()).as_dict().cloned().unwrap();
     assert!(catalog.get(b"Perms").is_none(), "a lock is not a certification");
 }
@@ -275,4 +278,148 @@ fn a_certification_that_also_locks_keeps_both_references() {
     assert_eq!((s.certify, s.locks_document), (Some(3), Some(1)));
     // The stricter of the two judges later changes: a comment, which P 3 alone permits, is not.
     assert!(is_disallowed(&info(&comment(&sealed), &trust(), "Seal").modification));
+}
+
+/// The one FieldMDP signature reference in the value of field `name`.
+fn field_mdp(doc: &Document, name: &str) -> Dict {
+    let v = resolved_dict(doc, &field(doc, name), b"V").unwrap();
+    let refs = doc.resolve(v.get(b"Reference").unwrap()).as_array().cloned().unwrap();
+    let mut found: Vec<Dict> =
+        refs.iter().filter_map(|r| doc.resolve(r).as_dict().cloned()).filter(|r| r.name(b"TransformMethod") == Some(&b"FieldMDP"[..])).collect();
+    assert_eq!(found.len(), 1);
+    found.remove(0)
+}
+
+/// The names in `/Fields` of lock or transform parameters `d`.
+fn listed(doc: &Document, d: &Dict) -> Vec<String> {
+    let a = doc.resolve(d.get(b"Fields").unwrap()).as_array().cloned().unwrap();
+    a.iter().map(|n| doc.resolve(n).as_string().map(PdfString::to_text).unwrap()).collect()
+}
+
+/// `signed` with the text field "note" filled in a later revision.
+fn fill_note(signed: &[u8]) -> Vec<u8> {
+    edit_after(signed, |d| d.update_dict(r(NOTE), |n| n.set(b"V".to_vec(), PdfString::text("changed"))).unwrap())
+}
+
+fn try_sign(bytes: &[u8], o: &SignOptions) -> Result<Vec<u8>, pdfcraft_sign::SignError> {
+    pdfcraft_sign::sign(&open(bytes), &id(), o)
+}
+
+#[test]
+fn a_later_approval_signature_after_a_p1_lock_is_disallowed() {
+    // The guarantee the final seal exists for: nobody signs after it.
+    let sealed = sign(&form(), Some("Seal"), Some(FieldLock::whole_document()));
+    let later = sign(&sealed, Some("S1"), None);
+    let s = info(&later, &trust(), "Seal");
+    assert!(is_disallowed(&s.modification), "{:?}", s.modification);
+    assert_eq!(s.status, Status::Invalid);
+    assert_eq!(info(&later, &trust(), "S1").status, Status::Valid, "the later signature itself is intact");
+}
+
+#[test]
+fn include_and_exclude_locks_name_their_fields() {
+    for (action, word, fill_breaks) in
+        [(LockAction::Include(vec!["note".into()]), &b"Include"[..], true), (LockAction::Exclude(vec!["note".into()]), &b"Exclude"[..], false)]
+    {
+        let sealed = sign(&form(), Some("Seal"), Some(FieldLock { action, permissions: None }));
+        let doc = open(&sealed);
+        let lock = resolved_dict(&doc, &field(&doc, "Seal"), b"Lock").unwrap();
+        assert_eq!(lock.name(b"Action"), Some(word));
+        assert_eq!(listed(&doc, &lock), ["note"]);
+        assert!(lock.get(b"P").is_none(), "no /P without permissions");
+        let reference = field_mdp(&doc, "Seal");
+        let params = resolved_dict(&doc, &reference, b"TransformParams").unwrap();
+        assert_eq!(params.name(b"Action"), Some(word));
+        assert_eq!(listed(&doc, &params), ["note"]);
+        assert_eq!(info(&sealed, &trust(), "Seal").locks_document, None);
+        // Filling "note" breaks an Include lock that names it, not an Exclude lock that spares it.
+        let s = info(&fill_note(&sealed), &trust(), "Seal");
+        assert_eq!(is_disallowed(&s.modification), fill_breaks, "{word:?}: {:?}", s.modification);
+    }
+}
+
+#[test]
+fn p2_and_p3_locks_set_the_level_later_changes_are_judged_by() {
+    let lock = |p| Some(FieldLock { action: LockAction::Include(vec!["note".into()]), permissions: Some(p) });
+    // P 2: another signature is permitted, a comment is not.
+    let p2 = sign(&form(), Some("Seal"), lock(2));
+    assert_eq!(info(&p2, &trust(), "Seal").locks_document, Some(2));
+    let s = info(&sign(&p2, Some("S1"), None), &trust(), "Seal");
+    assert!(!is_disallowed(&s.modification), "{:?}", s.modification);
+    assert!(is_disallowed(&info(&comment(&p2), &trust(), "Seal").modification));
+    // P 3: a comment is permitted too.
+    let p3 = sign(&form(), Some("Seal"), lock(3));
+    assert_eq!(info(&p3, &trust(), "Seal").locks_document, Some(3));
+    let s = info(&comment(&p3), &trust(), "Seal");
+    assert!(!is_disallowed(&s.modification), "{:?}", s.modification);
+    // The level never frees a field the lock names.
+    assert!(is_disallowed(&info(&fill_note(&p3), &trust(), "Seal").modification));
+}
+
+#[test]
+fn a_callers_lock_never_weakens_the_form_authors_lock() {
+    let authored = form_with_seal("/Lock << /Type /SigFieldLock /Action /All /P 1 >>");
+    let weaker = [
+        FieldLock { action: LockAction::Include(vec!["note".into()]), permissions: Some(1) },
+        FieldLock { action: LockAction::All, permissions: Some(2) },
+        FieldLock { action: LockAction::All, permissions: None },
+    ];
+    for lock in weaker {
+        assert!(try_sign(&authored, &opts(Some("Seal"), Some(lock.clone()))).is_err(), "{lock:?}");
+    }
+    // As strict: signed, the lock as strict as before.
+    let sealed = sign(&authored, Some("Seal"), Some(FieldLock::whole_document()));
+    assert_whole_document_lock(&sealed, "Seal");
+    // No lock asked for: the author's stays and applies.
+    let plain = sign(&authored, Some("Seal"), None);
+    assert_eq!(info(&plain, &trust(), "Seal").locks_document, Some(1));
+    // Stricter than the author's: the caller's is written.
+    let authored = form_with_seal("/Lock << /Type /SigFieldLock /Action /Include /Fields [(note)] /P 2 >>");
+    let sealed = sign(&authored, Some("Seal"), Some(FieldLock::whole_document()));
+    assert_whole_document_lock(&sealed, "Seal");
+}
+
+#[test]
+fn a_lock_never_grants_more_than_the_certification_in_force() {
+    let looser = || Some(FieldLock { action: LockAction::All, permissions: Some(3) });
+    let certified = try_sign(&form(), &SignOptions { certify: Some(2), ..opts(Some("S1"), None) }).unwrap();
+    assert!(try_sign(&certified, &opts(Some("Seal"), looser())).is_err(), "P 3 after a P 2 certification");
+    let sealed = sign(&certified, Some("Seal"), Some(FieldLock::whole_document()));
+    assert_eq!(info(&sealed, &trust(), "S1").status, Status::Valid, "a lock is a signature P 2 permits");
+    // Both in one signature.
+    assert!(try_sign(&form(), &SignOptions { certify: Some(2), ..opts(Some("Seal"), looser()) }).is_err());
+    // Out-of-range levels are refused, for a certification as for a lock.
+    for p in [0, 4] {
+        assert!(try_sign(&form(), &SignOptions { certify: Some(p), ..opts(Some("Seal"), None) }).is_err(), "certify {p}");
+        let lock = Some(FieldLock { action: LockAction::All, permissions: Some(p) });
+        assert!(try_sign(&form(), &opts(Some("Seal"), lock)).is_err(), "lock {p}");
+    }
+}
+
+#[test]
+fn a_null_lock_level_is_no_level() {
+    // ISO 32000-2 §7.3.7: a key whose value is null is absent.
+    let sealed = sign(&form_with_seal("/Lock << /Type /SigFieldLock /Action /Include /Fields [(note)] /P null >>"), Some("Seal"), None);
+    let s = info(&comment(&sealed), &trust(), "Seal");
+    assert_eq!(s.locks_document, None);
+    assert_eq!(s.status, Status::Valid, "{:?}", s.details);
+}
+
+#[test]
+fn a_dss_from_an_older_pdfcraft_keeps_a_p1_certification_valid() {
+    let id = id();
+    let certified = try_sign(&form(), &SignOptions { certify: Some(1), ..opts(Some("Seal"), None) }).unwrap();
+    let ltv = dss::embed(&open(&certified), &Evidence { certs: vec![id.certificate.raw.clone()], ocsps: Vec::new(), crls: Vec::new() }).unwrap();
+    let s = info(&ltv, &trust(), "Seal");
+    assert!(matches!(s.modification, Modification::Allowed(_)), "{:?}", s.modification);
+    assert_eq!(s.status, Status::Valid, "{:?}", s.details);
+    // Older builds also wrote `/Filter /Adobe.PPKLite` into the store, an entry nothing reads.
+    let older = edit_after(&ltv, |d| {
+        let root = d.root().unwrap();
+        let store = d.get(root).as_dict().and_then(|c| c.get(b"DSS").and_then(Object::as_ref)).unwrap();
+        d.update_dict(store, |x| x.set(b"Filter".to_vec(), Object::name("Adobe.PPKLite"))).unwrap();
+    });
+    let s = info(&older, &trust(), "Seal");
+    assert!(matches!(s.modification, Modification::Allowed(_)), "{:?}", s.modification);
+    assert_eq!(s.status, Status::Valid, "{:?}", s.details);
 }

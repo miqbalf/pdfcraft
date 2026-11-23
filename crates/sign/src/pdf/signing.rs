@@ -1,5 +1,5 @@
 use super::listing::{mk_rotation, nums, sig_fields, text, walk_sig_fields};
-use super::{Certificate, Dict, DigestAlg, DigitalId, Document, HashSet, Object, PdfString, SaveOptions, SignError, SignedData, Stream};
+use super::{Certificate, Dict, DigestAlg, DigitalId, Document, HashSet, ObjRef, Object, PdfString, SaveOptions, SignError, SignedData, Stream};
 
 // ── signing ─────────────────────────────────────────────────────────────────────────────────
 
@@ -144,8 +144,9 @@ impl FieldLock {
         d
     }
 
-    /// The FieldMDP signature reference dictionary.
-    fn reference(&self) -> Dict {
+    /// The FieldMDP signature reference dictionary. `/Data`, required for FieldMDP, is the object
+    /// the modification analysis starts from: the catalog `root`.
+    fn reference(&self, root: ObjRef) -> Dict {
         let mut tp = Dict::new();
         tp.set(b"Type".to_vec(), Object::name("TransformParams"));
         self.scope(&mut tp);
@@ -154,8 +155,97 @@ impl FieldLock {
         sr.set(b"Type".to_vec(), Object::name("SigRef"));
         sr.set(b"TransformMethod".to_vec(), Object::name("FieldMDP"));
         sr.set(b"TransformParams".to_vec(), Object::Dict(tp));
+        sr.set(b"Data".to_vec(), Object::Ref(root));
         sr
     }
+
+    /// Whether this lock locks at least every field `other` (a lock dictionary or FieldMDP
+    /// parameters, as read) locks. `None` when `other` can't be read.
+    fn covers(&self, doc: &Document, other: &Dict) -> Option<bool> {
+        let names = || -> Option<HashSet<String>> {
+            let list = other.get(b"Fields").map(|f| doc.resolve(f))?;
+            list.as_array()?
+                .iter()
+                .map(|n| match &*doc.resolve(n) {
+                    Object::String(s) => Some(s.to_text()),
+                    Object::Name(n) => Some(String::from_utf8_lossy(n).into_owned()),
+                    _ => None,
+                })
+                .collect()
+        };
+        Some(match (&self.action, other.name(b"Action")?) {
+            (LockAction::All, _) => true,
+            (_, b"All") => false,
+            // Every name the other includes is included here too, or excluded by neither here.
+            (LockAction::Include(mine), b"Include") => names()?.iter().all(|n| mine.contains(n)),
+            (LockAction::Exclude(mine), b"Include") => names()?.iter().all(|n| !mine.contains(n)),
+            // What this excludes the other excludes too.
+            (LockAction::Exclude(mine), b"Exclude") => {
+                let theirs = names()?;
+                mine.iter().all(|n| theirs.contains(n))
+            }
+            (LockAction::Include(_), b"Exclude") => false,
+            _ => return None,
+        })
+    }
+}
+
+/// A level (1 to 3) as an option allows, or an error naming `what`.
+fn level(p: Option<u8>, what: &str) -> Result<(), SignError> {
+    match p {
+        Some(p) if !(1..=3).contains(&p) => Err(SignError::Pdf(format!("{what} permissions are 1, 2 or 3, not {p}"))),
+        _ => Ok(()),
+    }
+}
+
+/// The DocMDP level (1 to 3) of the certification in force in `doc`: the signature its catalog's
+/// `/Perms /DocMDP` names.
+fn certification_in_force(doc: &Document) -> Option<u8> {
+    let catalog = doc.get(doc.root()?);
+    let perms = doc.resolve(catalog.as_dict()?.get(b"Perms")?);
+    let sig = doc.resolve(perms.as_dict()?.get(b"DocMDP")?);
+    super::validate::docmdp_reference(doc, sig.as_dict()?)
+}
+
+/// Refuse a lock that would loosen what is already in force: a lock `/P` may not allow more than
+/// the document's certification, or this signature's own (ISO 32000-2 §12.7.5.5), and a lock the
+/// form author put on the field may only be kept or made stricter.
+fn check_lock(doc: &Document, opts: &SignOptions, field: Option<&Dict>) -> Result<(), SignError> {
+    let Some(lock) = &opts.lock else { return Ok(()) };
+    let certified = match (certification_in_force(doc), opts.certify) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    if let (Some(c), Some(p)) = (certified, lock.permissions)
+        && p > c
+    {
+        return Err(SignError::Pdf(format!("the document's certification allows changes up to level {c}; a lock can't allow more (level {p})")));
+    }
+    let Some(existing) = field.and_then(|f| f.get(b"Lock")).map(|l| doc.resolve(l)) else { return Ok(()) };
+    if matches!(*existing, Object::Null) {
+        return Ok(());
+    }
+    let refuse = || {
+        Err(SignError::Pdf("the field already has a lock that this one would loosen; sign it with a lock at least as strict, or without one".into()))
+    };
+    let Some(theirs) = existing.as_dict() else { return refuse() };
+    let their_level = match theirs.get(b"P").map(|p| doc.resolve(p)) {
+        None => None,
+        Some(p) if matches!(*p, Object::Null) => None,
+        Some(p) => match p.as_int().and_then(|p| u8::try_from(p).ok()).filter(|p| (1..=3).contains(p)) {
+            Some(p) => Some(p),
+            None => return refuse(),
+        },
+    };
+    let level_kept = match (their_level, lock.permissions) {
+        (None, _) => true,
+        (Some(t), Some(m)) => m <= t,
+        (Some(_), None) => false,
+    };
+    if !level_kept || lock.covers(doc, theirs) != Some(true) {
+        return refuse();
+    }
+    Ok(())
 }
 
 /// What an encrypted document's permissions (ISO 32000-2 §7.6.4.2, Table 22) allow when it was
@@ -251,11 +341,9 @@ fn sign_inner(
         return Err(SignError::Pdf("save the document's new security settings before signing it".into()));
     }
     check_signing_permissions(doc, opts)?;
-    if let Some(p) = opts.lock.as_ref().and_then(|l| l.permissions)
-        && !(1..=3).contains(&p)
-    {
-        return Err(SignError::Pdf(format!("a lock's permissions are 1, 2 or 3, not {p}")));
-    }
+    level(opts.certify, "a certification's")?;
+    level(opts.lock.as_ref().and_then(|l| l.permissions), "a lock's")?;
+    check_lock(doc, opts, None)?;
     let mut doc = doc.clone();
     let earlier_signatures = has_signatures(&doc);
     let root = doc.root().ok_or_else(|| SignError::Pdf("the document has no catalog".into()))?;
@@ -288,7 +376,7 @@ fn sign_inner(
     if let Some(p) = opts.certify {
         let mut tp = Dict::new();
         tp.set(b"Type".to_vec(), Object::name("TransformParams"));
-        tp.set(b"P".to_vec(), Object::Int(p.clamp(1, 3) as i64));
+        tp.set(b"P".to_vec(), Object::Int(i64::from(p)));
         tp.set(b"V".to_vec(), Object::name("1.2"));
         let mut sr = Dict::new();
         sr.set(b"Type".to_vec(), Object::name("SigRef"));
@@ -297,7 +385,7 @@ fn sign_inner(
         references.push(Object::Dict(sr));
     }
     if let Some(lock) = &opts.lock {
-        references.push(Object::Dict(lock.reference()));
+        references.push(Object::Dict(lock.reference(root)));
     }
     if !references.is_empty() {
         v.set(b"Reference".to_vec(), Object::Array(references));
@@ -326,6 +414,7 @@ fn sign_inner(
             if f.has_foreign_value(&doc) {
                 return Err(SignError::Pdf(format!("the value of the field {:?} is not a signature", f.name)));
             }
+            check_lock(&doc, opts, Some(&f.dict))?;
             let fr = f.r.ok_or_else(|| SignError::Pdf("the field is not an indirect object".into()))?;
             doc.update_dict(fr, |d| {
                 d.set(b"V".to_vec(), Object::Ref(sig));

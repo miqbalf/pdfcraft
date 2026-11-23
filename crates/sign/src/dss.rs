@@ -1,4 +1,4 @@
-//! The Document Security Store (ISO 32000-2 §12.8.2.3, formerly A.6.5): a `/DSS` dictionary in
+//! The Document Security Store (ISO 32000-2 §12.8.4.3, formerly A.6.5): a `/DSS` dictionary in
 //! the catalog holds certificates and revocation evidence (OCSP responses, CRLs) so signatures
 //! stay verifiable offline (PAdES B-LT), and `/VRI` indexes the evidence per signature.
 //!

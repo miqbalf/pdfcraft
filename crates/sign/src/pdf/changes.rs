@@ -555,7 +555,11 @@ fn dss_parts(doc: &Document, old: &Document) -> HashSet<u32> {
     for (r, role) in dss_walk(doc) {
         let now = doc.get(r);
         let shaped = match (role, &*now) {
-            (DssRole::Dss, Object::Dict(d)) => d.iter().all(|(k, _)| matches!(k.as_slice(), b"Type" | b"Certs" | b"CRLs" | b"OCSPs" | b"VRI")),
+            // `/Filter` is no DSS entry (ISO 32000-2 §12.8.4.3, Table 260), but older PdfCraft
+            // builds wrote `/Filter /Adobe.PPKLite` there. Nothing reads it, so it is let through.
+            (DssRole::Dss, Object::Dict(d)) => {
+                d.iter().all(|(k, _)| matches!(k.as_slice(), b"Type" | b"Certs" | b"CRLs" | b"OCSPs" | b"VRI" | b"Filter"))
+            }
             (DssRole::DataArray, Object::Array(a)) => a.iter().all(|e| matches!(e, Object::Ref(_)) && is_stream(e)),
             (DssRole::VriMap, Object::Dict(d)) => d.iter().all(|(_, v)| matches!(&*doc.resolve(v), Object::Dict(_))),
             (DssRole::VriEntry, Object::Dict(d)) => {

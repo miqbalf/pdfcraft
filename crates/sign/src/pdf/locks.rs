@@ -116,8 +116,9 @@ fn rules(old: &Document, field: &Field, value: &Dict) -> Result<Vec<Rule>, ()> {
         match &*lock {
             Object::Dict(d) => {
                 // A `/P` that is not one of the three permission levels is a lock that can't be
-                // read: it would otherwise pass as a lock that allows everything.
-                if d.get(b"P").is_some() && lock_level(old, d).is_none() {
+                // read: it would otherwise pass as a lock that allows everything. A null `/P` is
+                // no `/P` (ISO 32000-2 §7.3.7).
+                if d.get(b"P").is_some_and(|p| !matches!(*old.resolve(p), Object::Null)) && lock_level(old, d).is_none() {
                     return Err(());
                 }
                 out.push(rule(old, d)?)

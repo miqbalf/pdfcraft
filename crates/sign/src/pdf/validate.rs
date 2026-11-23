@@ -46,7 +46,7 @@ pub(super) fn is_doc_timestamp(d: &Dict) -> bool {
 
 /// The DocMDP permission level (`/P`, 1 to 3) that signature value `v` asks for in its `/Reference`,
 /// or `None` when it asks for none.
-fn docmdp_reference(doc: &Document, v: &Dict) -> Option<u8> {
+pub(super) fn docmdp_reference(doc: &Document, v: &Dict) -> Option<u8> {
     v.get(b"Reference")
         .map(|r| doc.resolve(r))
         .and_then(|r| r.as_array().cloned())
