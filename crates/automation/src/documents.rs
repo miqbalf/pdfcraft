@@ -722,7 +722,8 @@ impl Automation {
             Some(_) => self.pages(a, "pages")?,
             None => (0..doc.info.pages.len()).collect(),
         };
-        let stem = doc.name.trim_end_matches(".pdf").trim_end_matches(".PDF").to_string();
+        // Named as the app names them (`pdfcraft_engine::export::SAVE_AS`): `report-1.png`.
+        let doc_name = doc.name.clone();
         let mut ex = pdfcraft_engine::export::Exporter::new(doc);
         if tool == "doc_export_text" {
             let path = self.resolve(a.str("path")?, true)?;
@@ -735,6 +736,7 @@ impl Automation {
         if tool == "doc_export_all_images" {
             let min = u32::try_from(a.opt_int("min_size")?.unwrap_or(0).max(0)).unwrap_or(u32::MAX);
             let out = pdfcraft_engine::export::extract_images(&doc.export_source(), &pages, min).map_err(failed)?;
+            let stem = pdfcraft_engine::export::all_images_stem(&doc_name).map_err(failed)?;
             let mut files = Vec::new();
             for (k, img) in out.images.iter().enumerate() {
                 let path = child(&folder, &pdfcraft_engine::export::image_file_name(&stem, img, k + 1, doc.info.pages.len()));
@@ -757,7 +759,7 @@ impl Automation {
         // A write error stops the export as it is, not as a page error.
         let mut write_error = None;
         let exported = ex.images(&pages, dpi, format, |p, img| {
-            let path = child(&folder, &format!("{stem}_page_{}.{}", p + 1, format.extension()));
+            let path = child(&folder, &pdfcraft_engine::export::page_image_name(&doc_name, p, format)?);
             write_atomic(&path, &img).map_err(|e| {
                 let message = e.to_string();
                 write_error = Some(e);

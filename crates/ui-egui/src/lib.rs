@@ -428,6 +428,9 @@ pub struct PdfCraftApp {
     /// save that fails or is cancelled asks again next time.
     pub(crate) lock_answered: Option<pdfcraft_engine::DocId>,
     pub(crate) lock_remember: bool,
+    /// The lock question's answer for a Save As copy of this document: it locks the copy's
+    /// Fill & Sign marks only, never the document's, and is never remembered.
+    pub(crate) copy_lock: Option<(pdfcraft_engine::DocId, bool)>,
     /// Point size for new Fill & Sign text and dates, kept across launches.
     pub fill_text_size: f64,
     pub fill_tool: fill_sign::FillTool,
@@ -865,6 +868,12 @@ pub struct PdfCraftApp {
     pub export_draft: export_ui::ExportDraft,
     /// A running export's progress.
     export_status: Option<export_ui::ExportStatus>,
+    /// Files an export would replace, waiting behind [`Dialog::ReplaceFiles`].
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) pending_replace: Option<export_ui::PendingReplace>,
+    /// Where a background export leaves files it would replace, for the next frame to ask about.
+    #[cfg(not(target_arch = "wasm32"))]
+    replace_slot: export_ui::ReplaceSlot,
     /// The saved Fill & Sign signature and initials (drawn or typed).
     pub signature: Option<fill_sign::SavedSig>,
     pub initials: Option<fill_sign::SavedSig>,

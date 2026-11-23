@@ -1580,7 +1580,7 @@ fn writing_to_a_folder_touches_nothing_beside_it() {
     // `image_save` adds an extension when the path has none, which turned "." into `root.png`
     // beside the root.
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 18 }));
-    let pic = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/inside_page_1.png"] }))["doc"].as_u64().unwrap();
+    let pic = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/inside-1.png"] }))["doc"].as_u64().unwrap();
     for p in [".", "", "folder", "src/.."] {
         let e = a.call("image_save", &json!({ "doc": pic, "page": 1, "image": 1, "path": p })).unwrap_err();
         assert!(matches!(&e, ToolError::Failed(m) if m.contains("is a folder")), "{p:?}: {e:?}");
@@ -1621,8 +1621,7 @@ fn file_names_from_documents_stay_in_the_output_folder() {
     // The same for the images a page uses, with a document that has one.
     let doc = ok(&mut a, "doc_open", json!({ "path": "inside.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 18 }));
-    let pic =
-        ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/inside_page_1.png"], "name": "../../escape" }))["doc"].as_u64().unwrap();
+    let pic = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/inside-1.png"], "name": "../../escape" }))["doc"].as_u64().unwrap();
     let r = ok(&mut a, "doc_export_all_images", json!({ "doc": pic, "folder": "all" }));
     let files = r["files"].as_array().unwrap();
     assert_eq!(files.len(), 1, "{r}");
@@ -4035,11 +4034,11 @@ fn exporting_images_and_text_through_tools() {
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     let r = ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "out", "dpi": 72, "pages": [1, 3] }));
     assert_eq!(r["count"], 2);
-    assert!(dir.join("out/a_page_3.png").exists());
+    assert!(dir.join("out/a-3.png").exists());
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "out", "dpi": 72, "pages": [2], "format": "jpeg", "quality": 70 }));
-    assert!(std::fs::read(dir.join("out/a_page_2.jpg")).unwrap().starts_with(&[0xFF, 0xD8]));
+    assert!(std::fs::read(dir.join("out/a-2.jpg")).unwrap().starts_with(&[0xFF, 0xD8]));
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "out", "dpi": 72, "pages": [2], "format": "tiff" }));
-    let tif = std::fs::read(dir.join("out/a_page_2.tif")).unwrap();
+    let tif = std::fs::read(dir.join("out/a-2.tif")).unwrap();
     assert!(tif.starts_with(b"II*\0") || tif.starts_with(b"MM\0*"));
     assert!(matches!(a.call("doc_export_images", &json!({ "doc": doc, "folder": "out", "format": "webp" })), Err(ToolError::InvalidArgs(_))));
     ok(&mut a, "doc_export_text", json!({ "doc": doc, "path": "a.txt" }));
@@ -4784,7 +4783,7 @@ fn editing_page_images_through_tools() {
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 18, "pages": [1, 2] }));
-    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a_page_1.png"] }))["doc"].as_u64().unwrap();
+    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a-1.png"] }))["doc"].as_u64().unwrap();
     let list = ok(&mut a, "page_images", json!({ "doc": made, "page": 1 }));
     assert_eq!(list["count"], 1);
     let r = ok(&mut a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "move", "rect": [5, 5, 25, 35] }));
@@ -4818,7 +4817,7 @@ fn editing_page_images_through_tools() {
     let saved = ok(&mut a, "image_save", json!({ "doc": made, "page": 1, "image": 1, "path": "out/picture" }));
     assert_eq!(saved["format"], "png");
     assert!(std::fs::read(dir.join("out/picture.png")).unwrap().starts_with(b"\x89PNG"));
-    ok(&mut a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "replace", "path": "src/a_page_2.png" }));
+    ok(&mut a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "replace", "path": "src/a-2.png" }));
     assert_eq!(ok(&mut a, "page_images", json!({ "doc": made, "page": 1 }))["count"], 1);
     ok(&mut a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "delete" }));
     assert_eq!(ok(&mut a, "page_images", json!({ "doc": made, "page": 1 }))["count"], 0);
@@ -4831,8 +4830,8 @@ fn arranging_page_images_through_tools() {
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 18, "pages": [1, 2] }));
-    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a_page_1.png"] }))["doc"].as_u64().unwrap();
-    ok(&mut a, "page_add_image", json!({ "doc": made, "page": 1, "path": "src/a_page_2.png", "rect": [50, 50, 100, 100] }));
+    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a-1.png"] }))["doc"].as_u64().unwrap();
+    ok(&mut a, "page_add_image", json!({ "doc": made, "page": 1, "path": "src/a-2.png", "rect": [50, 50, 100, 100] }));
     assert_eq!(ok(&mut a, "page_images", json!({ "doc": made, "page": 1 }))["count"], 2);
     let r = ok(&mut a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "bring_to_front" }));
     assert_eq!(r["undo"], "Bring to front");
@@ -4854,7 +4853,7 @@ fn transforming_page_images_through_tools() {
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 18, "pages": [1] }));
-    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a_page_1.png"] }))["doc"].as_u64().unwrap();
+    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a-1.png"] }))["doc"].as_u64().unwrap();
     let rect = |a: &mut Automation| ok(a, "page_images", json!({ "doc": made, "page": 1 }))["images"][0]["rect"].clone();
     let transform =
         |a: &mut Automation, m: Value| ok(a, "image_edit", json!({ "doc": made, "page": 1, "image": 1, "action": "transform", "matrix": m }));
@@ -4905,7 +4904,7 @@ fn enhance_camera_image_through_tools() {
     let mut a = auto(&dir);
     let doc = ok(&mut a, "doc_open", json!({ "path": "a.pdf" }))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 72, "pages": [1] }));
-    let photo = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a_page_1.png"] }))["doc"].as_u64().unwrap();
+    let photo = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a-1.png"] }))["doc"].as_u64().unwrap();
     // A 200 × 300 pt page at one pixel per point; the corners, in any order, keep a 160 × 240 part.
     let r = ok(&mut a, "page_enhance_camera", json!({ "doc": photo, "page": 1, "corners": [180, 270, 20, 30, 20, 270, 180, 30] }));
     assert_eq!(r["undo"], "Enhance camera image");
@@ -5093,12 +5092,12 @@ fn exporting_all_images_through_tools() {
     // A PDF made from two page renders (PNG, JPEG) holds two images.
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 36, "pages": [1] }));
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "src", "dpi": 36, "pages": [2], "format": "jpeg" }));
-    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a_page_1.png", "src/a_page_2.jpg"] }))["doc"].as_u64().unwrap();
+    let made = ok(&mut a, "doc_create", json!({ "from": "images", "paths": ["src/a-1.png", "src/a-2.jpg"] }))["doc"].as_u64().unwrap();
     let r = ok(&mut a, "doc_export_all_images", json!({ "doc": made, "folder": "imgs" }));
     assert_eq!(r["count"], 2, "{r}");
     let files: Vec<&str> = r["files"].as_array().unwrap().iter().map(|f| f["path"].as_str().unwrap()).collect();
     assert!(files[0].ends_with("_Page_1_Image_0001.png") && files[1].ends_with("_Page_2_Image_0002.jpg"), "{files:?}");
-    assert_eq!(std::fs::read(files[1]).unwrap(), std::fs::read(dir.join("src/a_page_2.jpg")).unwrap(), "JPEG unchanged");
+    assert_eq!(std::fs::read(files[1]).unwrap(), std::fs::read(dir.join("src/a-2.jpg")).unwrap(), "JPEG unchanged");
     assert!(std::fs::read(files[0]).unwrap().starts_with(b"\x89PNG"));
     assert_eq!(ok(&mut a, "doc_export_all_images", json!({ "doc": made, "folder": "imgs2", "pages": [2] }))["count"], 1);
     assert_eq!(ok(&mut a, "doc_export_all_images", json!({ "doc": made, "folder": "imgs3", "min_size": 10000 }))["count"], 0);
@@ -5687,11 +5686,11 @@ fn preparing_a_form_through_tools() {
     };
     let before = png(&mut a);
     ok(&mut a, "doc_export_images", json!({ "doc": doc, "folder": "pics", "dpi": 18, "pages": [1] }));
-    ok(&mut a, "form_set_image", json!({ "doc": doc, "field": "Image1", "path": "pics/a_page_1.png" }));
+    ok(&mut a, "form_set_image", json!({ "doc": doc, "field": "Image1", "path": "pics/a-1.png" }));
     let after = png(&mut a);
     assert_ne!(before, after, "the picture is drawn");
     assert_eq!(ok(&mut a, "edit_undo", json!({ "doc": doc }))["undone"], "Set the image of Image1");
-    assert!(matches!(a.call("form_set_image", &json!({ "doc": doc, "field": "size", "path": "pics/a_page_1.png" })), Err(ToolError::Failed(_))));
+    assert!(matches!(a.call("form_set_image", &json!({ "doc": doc, "field": "size", "path": "pics/a-1.png" })), Err(ToolError::Failed(_))));
 }
 
 #[test]
@@ -14292,7 +14291,7 @@ fn editor_crop_group_move_and_arrange_survive_added_item_deletion_through_tools(
     let mut a = auto(&dir);
     let source = ok(&mut a, "doc_open", json!({"path":"a.pdf"}))["doc"].as_u64().unwrap();
     ok(&mut a, "doc_export_images", json!({"doc":source,"folder":"src","dpi":18,"pages":[1]}));
-    let doc = ok(&mut a, "doc_create", json!({"from":"images","paths":["src/a_page_1.png"]}))["doc"].as_u64().unwrap();
+    let doc = ok(&mut a, "doc_create", json!({"from":"images","paths":["src/a-1.png"]}))["doc"].as_u64().unwrap();
     ok(&mut a, "image_edit", json!({"doc":doc,"page":1,"image":1,"action":"move","rect":[5,5,25,35]}));
     ok(&mut a, "image_edit", json!({"doc":doc,"page":1,"image":1,"action":"crop","rect":[10,10,20,30]}));
     ok(&mut a, "page_add_text", json!({"doc":doc,"page":1,"text":"Movable label","rect":[2,40,45,55],"size":6}));

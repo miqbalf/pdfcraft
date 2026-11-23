@@ -125,6 +125,7 @@ impl PdfCraftApp {
             pending_lock: None,
             lock_answered: None,
             lock_remember: false,
+            copy_lock: None,
             fill_text_size: fill_sign::TEXT_SIZE,
             fill_tool: fill_sign::FillTool::Signature,
             fill_text_color: [0.0; 3],
@@ -354,6 +355,10 @@ impl PdfCraftApp {
             unmarked_page: Default::default(),
             export_draft: Default::default(),
             export_status: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            pending_replace: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            replace_slot: Default::default(),
             signature: None,
             initials: None,
             signature_draft: Default::default(),

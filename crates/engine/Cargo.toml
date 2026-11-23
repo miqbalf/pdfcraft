@@ -10,6 +10,9 @@ workspace = true
 
 [dependencies]
 craft-docpath = { workspace = true }
+# Save As = Export: the one list of formats PdfCraft writes and its naming rules (`export::SAVE_AS`),
+# shared by the app and automation. std only.
+craft-share = { workspace = true }
 craft-image-codecs = { workspace = true }
 pdfcraft-measure = { workspace = true }
 image = { version = "0.25", default-features = false }

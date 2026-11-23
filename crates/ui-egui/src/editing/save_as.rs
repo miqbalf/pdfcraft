@@ -6,32 +6,21 @@
 //! state. On the web the copy downloads (also inside a hosting page: Save As never goes to the
 //! host); on the desktop the save dialog asks where. Plain Save is not here (`save.rs`).
 
-use craft_share::export::{Delivery, ExportFormat, ExportList, Runtime, SaveAsPlan};
+use craft_share::export::{Delivery, Runtime, SaveAsPlan};
 use pdfcraft_engine::compare::OfficeFormat;
 
 use crate::PdfCraftApp;
 use crate::export_ui::ExportKind;
 
-/// Every format PdfCraft writes, in the File menu's order. The labels are the commands' own
-/// (translation keys that already exist). The image kinds write one file per page or image;
-/// the Export dialog sets their real extension and type per file.
-pub const SAVE_AS: ExportList = ExportList::new(&[
-    ExportFormat::new("pdf", "Save as…", "pdf", "application/pdf"),
-    ExportFormat::new("docx", "Export to Word…", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-    ExportFormat::new("pptx", "Export to PowerPoint…", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
-    ExportFormat::new("rtf", "Export to RTF…", "rtf", "application/rtf"),
-    ExportFormat::new("html", "Export to HTML…", "html", "text/html"),
-    ExportFormat::new("text", "Export to text…", "txt", "text/plain"),
-    ExportFormat::new("image", "Export to image…", "png", "image/png").also_exts(&["jpg", "jpeg", "tif", "tiff"]).many(),
-    ExportFormat::new("all_images", "Export all images…", "png", "image/png").many(),
-]);
+/// Every format PdfCraft writes (the engine's list, shared with automation).
+pub use pdfcraft_engine::export::SAVE_AS;
 
 /// What writes a desktop copy once the save dialog has answered (the path chosen).
 #[cfg(not(target_arch = "wasm32"))]
 type WriteCopy = Box<dyn FnOnce(&mut PdfCraftApp, String) + Send>;
 
 /// The name a document gets when it has none to name a copy after.
-pub(crate) const FALLBACK: &str = "Document";
+pub(crate) use pdfcraft_engine::export::COPY_FALLBACK as FALLBACK;
 
 /// What writes a format of [`SAVE_AS`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -218,7 +207,15 @@ impl PdfCraftApp {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn ask_copy_path(&mut self, format: ExportFormat, file_name: String, folder: Option<String>, title: String, again: bool, write: WriteCopy) {
+    fn ask_copy_path(
+        &mut self,
+        format: craft_share::export::ExportFormat,
+        file_name: String,
+        folder: Option<String>,
+        title: String,
+        again: bool,
+        write: WriteCopy,
+    ) {
         use crate::file_filter::AddFilterAnyCase as _;
         let dialog = rfd::AsyncFileDialog::new()
             .set_title(title.clone())

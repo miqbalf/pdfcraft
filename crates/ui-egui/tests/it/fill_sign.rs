@@ -2896,3 +2896,42 @@ fn fill_sign_enter_adds_lines_outside_click_commits_and_escape_cancels() {
     assert_eq!(unchanged(&h), before, "Escape cancels without writing");
     assert_eq!(items(&h), [("FreeText".to_owned(), Some(text.to_owned()))]);
 }
+
+/// Save As is a copy (S5 review I1): answering Lock, or the "lock when saving" preference, locks
+/// the signature into the copy only. The open document keeps its mark, its undo history, its
+/// unsaved state and the preferences.
+#[test]
+fn save_as_locks_the_signature_in_the_copy_only() {
+    for always in [false, true] {
+        let out = std::env::temp_dir().join(format!("pdfcraft-lock-copy-{always}-{}.pdf", std::process::id()));
+        let _ = std::fs::remove_file(&out);
+        let mut h = harness();
+        h.state_mut().save_override = Some(out.to_string_lossy().into_owned());
+        h.state_mut().flatten_fill_sign_on_save = always;
+        h.state_mut().signature = Some(SavedSig::Typed("Ada Lovelace".into()));
+        h.state_mut().execute("sign.fill.signature");
+        h.run_steps(2);
+        click(&mut h, 40.0, 300.0);
+        let state = |h: &Harness<'static, PdfCraftApp>| {
+            let d = h.state().session.get(h.state().views[0].id).unwrap();
+            (d.edit_generation(), d.dirty, d.can_undo().map(str::to_string), d.info.annotations.iter().filter(|a| a.fill_sign).count())
+        };
+        let before = state(&h);
+        assert_eq!(before.3, 1, "a placed signature");
+        h.state_mut().run_command("file.save_as");
+        h.run_steps(2);
+        if !always {
+            h.get_by_label("Lock your signature into the page?");
+            assert!(h.query_by_label("Don't ask again").is_none(), "a Save As answer is never remembered");
+            h.get_by_label("Lock and save").click();
+            h.run_steps(3);
+        }
+        assert!(out.exists(), "always={always}: the copy is written");
+        assert_eq!(state(&h), before, "always={always}: the document, its undo history and unsaved state are unchanged");
+        assert_eq!((h.state().flatten_fill_sign_on_save, h.state().ask_to_lock_signatures), (always, true), "the preferences are unchanged");
+        let mut s = pdfcraft_engine::Session::new();
+        let id = s.open("copy.pdf", None, std::sync::Arc::new(std::fs::read(&out).unwrap()), None).expect("the copy opens");
+        assert_eq!(s.get(id).unwrap().info.annotations.iter().filter(|a| a.fill_sign).count(), 0, "always={always}: locked into the copy's page");
+        let _ = std::fs::remove_file(&out);
+    }
+}

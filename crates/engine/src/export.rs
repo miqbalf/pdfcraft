@@ -9,9 +9,51 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex, PoisonError, mpsc};
 
+use craft_share::export::{ExportFormat, ExportList};
 use pdfcraft_render::{PageRenderer, RenderRequest, RequestKind};
 
 use crate::Document;
+
+/// Every format PdfCraft writes, in the File menu's order. The labels are the commands' own
+/// (translation keys that already exist). The image kinds write one file per page or image;
+/// the Export dialog sets their real extension and type per file.
+pub const SAVE_AS: ExportList = ExportList::new(&[
+    ExportFormat::new("pdf", "Save as…", "pdf", "application/pdf"),
+    ExportFormat::new("docx", "Export to Word…", "docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ExportFormat::new("pptx", "Export to PowerPoint…", "pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    ExportFormat::new("rtf", "Export to RTF…", "rtf", "application/rtf"),
+    ExportFormat::new("html", "Export to HTML…", "html", "text/html"),
+    ExportFormat::new("text", "Export to text…", "txt", "text/plain"),
+    ExportFormat::new("image", "Export to image…", "png", "image/png").also_exts(&["jpg", "jpeg", "tif", "tiff"]).many(),
+    ExportFormat::new("all_images", "Export all images…", "png", "image/png").many(),
+]);
+
+/// The name a document gets when it has none to name a copy after.
+pub const COPY_FALLBACK: &str = "Document";
+
+/// The file page `page` (from 0) of `doc_name` is exported to as an image of `format`: the
+/// shared numbered name (`report-3.png`, [`ExportList::numbered_file_name`]) with the extension
+/// of the encoder used, whatever image extension the name kept, so the name, the bytes and a
+/// download's type agree.
+pub fn page_image_name(doc_name: &str, page: usize, format: ImageFormat) -> Result<String, String> {
+    let name = SAVE_AS.numbered_file_name(doc_name, COPY_FALLBACK, "image", page + 1).map_err(|e| e.to_string())?;
+    let accepted = SAVE_AS.get("image").is_some_and(|f| name.rsplit_once('.').is_some_and(|(_, ext)| f.accepts(ext)));
+    let stem = match name.rsplit_once('.') {
+        Some((stem, _)) if accepted => stem,
+        _ => &name,
+    };
+    Ok(format!("{stem}.{}", format.extension()))
+}
+
+/// The stem extracted images (Export all images) are numbered after: the copy's name without
+/// an image extension it kept (any case).
+pub fn all_images_stem(doc_name: &str) -> Result<String, String> {
+    let name = SAVE_AS.file_name(doc_name, COPY_FALLBACK, "all_images").map_err(|e| e.to_string())?;
+    Ok(match name.rsplit_once('.') {
+        Some((stem, ext)) if SAVE_AS.get("image").is_some_and(|f| f.accepts(ext)) => stem.to_string(),
+        _ => name,
+    })
+}
 
 /// At most this many pages are drawn at once by [`Exporter::images`].
 const MAX_IMAGE_WORKERS: usize = 8;

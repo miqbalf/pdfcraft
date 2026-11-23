@@ -73,6 +73,7 @@ struct Pending {
     rename_now: bool,
     overwrite_now: bool,
     overwrite_elsewhere: bool,
+    replace_files: Option<bool>,
     lock_answer: Option<bool>,
     summarize_now: bool,
     optimize_now: bool,
@@ -321,6 +322,11 @@ fn dialog_body(ui: &mut egui::Ui, app: &mut PdfCraftApp, dialog: Dialog, req: &m
         }
         Dialog::Revert => {
             if !dialog_revert(ui, app, req) {
+                return false;
+            }
+        }
+        Dialog::ReplaceFiles => {
+            if !dialog_replace_files(ui, app, req) {
                 return false;
             }
         }
@@ -1343,7 +1349,10 @@ fn dialog_lock_signatures(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pe
     ui.add_space(8.0);
     ui.label(tl!("A placed signature is a comment until it is locked: anyone with a PDF editor can move or remove it. Locking makes your Fill & Sign text, marks and signatures part of the page."));
     ui.add_space(8.0);
-    ui.add(widgets::checkbox(&mut app.lock_remember, tl!("Don't ask again")));
+    // A Save As answer is for that copy only, never remembered.
+    if !app.pending_lock.as_ref().is_some_and(crate::editing::PendingLock::is_copy) {
+        ui.add(widgets::checkbox(&mut app.lock_remember, tl!("Don't ask again")));
+    }
     ui.add_space(12.0);
     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
         if widgets::pill_button(ui, tl!("Lock and save"), true).clicked() {
@@ -1377,6 +1386,35 @@ fn dialog_revert(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending) ->
             req.close = true;
         }
         if widgets::pill_button(ui, tl!("Cancel"), false).clicked() {
+            req.close = true;
+        }
+    });
+    false
+}
+
+/// `Dialog::ReplaceFiles` content. Returns `false` when it has its own buttons and no footer is wanted.
+fn dialog_replace_files(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut Pending) -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    let n = app.pending_replace.as_ref().map_or(0, |p| p.existing);
+    #[cfg(target_arch = "wasm32")]
+    let n = {
+        let _ = &app;
+        0
+    };
+    ui.label(egui::RichText::new(tl!("Replace existing files?")).font(theme::semibold(18.0)));
+    ui.add_space(8.0);
+    ui.label(crate::i18n::fmt(
+        tl!("{n} of the files to export already exist in that folder. Replacing them can't be undone."),
+        &[("n", &n.to_string())],
+    ));
+    ui.add_space(12.0);
+    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        if widgets::pill_button(ui, tl!("Replace"), true).clicked() {
+            req.replace_files = Some(true);
+            req.close = true;
+        }
+        if widgets::pill_button(ui, tl!("Cancel"), false).clicked() {
+            req.replace_files = Some(false);
             req.close = true;
         }
     });
@@ -1922,7 +1960,14 @@ fn finish_requests(app: &mut PdfCraftApp, dialog: Dialog, modal_closed: bool, re
         }
     }
     #[cfg(target_arch = "wasm32")]
-    let _ = (req.overwrite_now, req.overwrite_elsewhere);
+    let _ = (req.overwrite_now, req.overwrite_elsewhere, req.replace_files);
+    // Replace or not; dismissed is not.
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(replace) = req.replace_files {
+        app.answer_replace(replace);
+    } else if dialog == Dialog::ReplaceFiles && (modal_closed || req.close) {
+        app.answer_replace(false);
+    }
     // Cancelled or dismissed: the save is dropped.
     #[cfg(not(target_arch = "wasm32"))]
     if dialog == Dialog::OverwriteChanged && (modal_closed || req.close) {

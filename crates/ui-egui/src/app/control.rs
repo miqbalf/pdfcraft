@@ -117,10 +117,7 @@ impl PdfCraftApp {
                     "watermark" => Some(Dialog::Marks(pdfcraft_engine::MarkKind::Watermark)),
                     "background" => Some(Dialog::Marks(pdfcraft_engine::MarkKind::Background)),
                     "printer-marks" => Some(Dialog::PrinterMarks),
-                    "export-image" => Some(Dialog::Export(export_ui::ExportKind::Image)),
                     "word-count" => Some(Dialog::WordCount),
-                    "export-text" => Some(Dialog::Export(export_ui::ExportKind::Text)),
-                    "export-all-images" => Some(Dialog::Export(export_ui::ExportKind::AllImages)),
                     "accessibility-options" => Some(Dialog::AccessibilityOptions),
                     "recognize-text" => Some(Dialog::RecognizeText),
                     "enhance-scan" => Some(Dialog::EnhanceScan),
@@ -149,6 +146,16 @@ impl PdfCraftApp {
                         // can be modified, as the menu is.
                         self.execute("prepress.hairlines");
                         return Ok(());
+                    }
+                    // Through Save As, as every Export is: the dialog opens for the active document.
+                    "export-image" | "export-text" | "export-all-images" => {
+                        let format = match value {
+                            "export-image" => "image",
+                            "export-text" => "text",
+                            _ => "all_images",
+                        };
+                        self.save_as_copy(format);
+                        self.dialog
                     }
                     "page-properties" => {
                         // Same path as the panel, so the selected pages and their order are seeded.

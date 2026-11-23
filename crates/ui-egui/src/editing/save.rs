@@ -21,6 +21,13 @@ pub struct PendingLock {
     after: Box<dyn FnOnce(&mut PdfCraftApp) + Send>,
 }
 
+impl PendingLock {
+    /// The question is for a Save As copy (its answer locks the copy only).
+    pub(crate) fn is_copy(&self) -> bool {
+        self.target == SaveTarget::Copy
+    }
+}
+
 /// Where Save writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SaveTarget {
@@ -197,6 +204,10 @@ impl PdfCraftApp {
     /// as [`Self::copy_plan`] says, then `after`. Never touches the document's file, name, dirty
     /// flag or saved state, and never goes to a hosting page.
     fn save_copy(&mut self, id: pdfcraft_engine::DocId, name: &str, doc_path: Option<&str>, after: Box<dyn FnOnce(&mut Self) + Send>) -> bool {
+        // Lock the copy's Fill & Sign marks when the preference says so, or when this Save As was
+        // answered with Lock.
+        let answered = self.copy_lock.take().is_some_and(|(doc, lock)| doc == id && lock);
+        let lock = self.flatten_fill_sign_on_save || answered;
         let plan = match self.copy_plan(name, "pdf") {
             Ok(p) => p,
             Err(e) => {
@@ -206,7 +217,7 @@ impl PdfCraftApp {
         };
         match plan.delivery {
             craft_share::export::Delivery::Download => {
-                let Some(bytes) = self.copy_bytes(id, None) else { return false };
+                let Some(bytes) = self.copy_bytes(id, lock) else { return false };
                 match self.download_copy(&plan.file_name, plan.format.mime, &bytes) {
                     Ok(()) => {
                         self.notify_fmt("Downloaded {name}", &[("name", &plan.file_name)]);
@@ -225,7 +236,7 @@ impl PdfCraftApp {
                 let w = written.clone();
                 // The bytes are taken once the user has chosen, so edits made meanwhile are in the copy.
                 self.pick_copy_path(&plan, doc_path, tl!("Save as…"), move |app, dest| {
-                    if app.write_copy(id, &dest, after) {
+                    if app.write_copy(id, &dest, lock, after) {
                         w.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
                 });
@@ -239,49 +250,74 @@ impl PdfCraftApp {
         }
     }
 
-    /// The bytes of a copy of document `id`, ready to deliver: what is typed is committed, Fill &
-    /// Sign marks are locked when the preferences say so, and the document's WillSave actions run,
-    /// as for a save. A copy is a clean file without earlier revisions (#2165) unless the document
-    /// is signed (its signatures must keep covering it), read-only, or `dest` is its own file.
-    /// `None`, having said why, when it cannot be made.
-    fn copy_bytes(&mut self, id: pdfcraft_engine::DocId, dest: Option<&str>) -> Option<Vec<u8>> {
-        if !self.commit_typing_in(id) || !self.flatten_fill_sign_for_save(id) {
+    /// The bytes of a copy of document `id`, ready to deliver. What is typed is committed first
+    /// (it is part of the document). The rest happens on a throwaway session opened from the
+    /// document's bytes, never on the open document: its WillSave actions run there, and its
+    /// Fill & Sign marks are locked there when `lock`. A copy is a clean file without earlier
+    /// revisions (#2165) unless the document is signed (its signatures must keep covering it) or
+    /// read-only. `None`, having said why, when it cannot be made.
+    fn copy_bytes(&mut self, id: pdfcraft_engine::DocId, lock: bool) -> Option<Vec<u8>> {
+        if !self.commit_typing_in(id) {
             return None;
         }
-        let Some((name, full)) = self.session.get(id).map(|d| {
-            #[cfg(not(target_arch = "wasm32"))]
-            let own = d.path.as_deref().zip(dest).is_some_and(|(p, dest)| crate::same_file(p, dest));
-            // The web build has no files: a copy is never written over the document's own.
-            #[cfg(target_arch = "wasm32")]
-            let own = {
-                let _ = dest;
-                false
-            };
-            (d.name.clone(), !own && d.read_only_reason.is_none() && !d.is_signed())
-        }) else {
+        let Some(d) = self.session.get(id) else {
             self.notify_tr("The document was closed before it could be saved.");
             return None;
         };
-        self.run_document_actions(id, pdfcraft_engine::js::DocumentScriptEvent::WillSave);
-        let bytes = if full { self.session.save_full_bytes(id) } else { self.session.save_bytes(id) };
-        match bytes.and_then(|b| self.session.check_save(id, &b).map(|()| b)) {
+        let (name, password) = (d.name.clone(), d.password.clone());
+        let signed = d.is_signed();
+        let full = d.read_only_reason.is_none() && !signed;
+        // Locking changes page content in an update, which validators report as a change after
+        // signing: never on a digitally signed document, as for a save.
+        let lock = lock && !signed && d.info.annotations.iter().any(|a| a.fill_sign);
+        let failed =
+            |app: &mut Self, e: &dyn std::fmt::Display| app.notify_fmt("Couldn't save {name}: {e}", &[("name", &name), ("e", &e.to_string())]);
+        let bytes = match self.session.save_bytes(id).and_then(|b| self.session.check_save(id, &b).map(|()| b)) {
+            Ok(b) => b,
+            Err(e) => {
+                failed(self, &e);
+                return None;
+            }
+        };
+        let mut copy = pdfcraft_engine::Session::new();
+        copy.set_javascript(self.session.javascript());
+        let doc = match copy.open(name.clone(), None, bytes.clone(), password.as_deref()) {
+            Ok(doc) => doc,
+            // No throwaway to run scripts or lock in: the document's own bytes, unless locking
+            // was asked for, which the copy must not silently lack.
+            Err(e) if lock => {
+                failed(self, &e);
+                return None;
+            }
+            Err(_) => return Some(bytes.to_vec()),
+        };
+        // A script's alerts and requests have no window here; what it changes is in the copy.
+        let _ = copy.run_document_actions(doc, pdfcraft_engine::js::DocumentScriptEvent::WillSave);
+        if lock && let Err(e) = copy.apply(doc, pdfcraft_engine::Edit::FlattenFillSign) {
+            failed(self, &e);
+            return None;
+        }
+        let out = if full { copy.save_full_bytes(doc) } else { copy.save_bytes(doc) };
+        match out {
             Ok(b) => Some(b.to_vec()),
             Err(e) => {
-                self.notify_fmt("Couldn't save {name}: {e}", &[("name", &name), ("e", &e.to_string())]);
+                failed(self, &e);
                 None
             }
         }
     }
 
-    /// Write a PDF copy of document `id` to `dest`, then `after`. The copy is not the
-    /// document's file: its path, name, dirty flag and saved state stay. A copy picked over the
-    /// document's own file is a plain Save of it. Returns `true` if written.
+    /// Write a PDF copy of document `id` to `dest` (Fill & Sign marks locked in it when `lock`),
+    /// then `after`. The copy is not the document's file: its path, name, dirty flag and saved
+    /// state stay. Save As never writes over the document's own file: that is Save. Returns
+    /// `true` if written.
     #[cfg(not(target_arch = "wasm32"))]
-    fn write_copy(&mut self, id: pdfcraft_engine::DocId, dest: &str, after: Box<dyn FnOnce(&mut Self) + Send>) -> bool {
+    fn write_copy(&mut self, id: pdfcraft_engine::DocId, dest: &str, lock: bool, after: Box<dyn FnOnce(&mut Self) + Send>) -> bool {
         if self.session.get(id).and_then(|d| d.path.as_deref()).is_some_and(|p| crate::same_file(p, dest)) {
-            return self.save_doc_to_then(id, dest, SaveTarget::InPlace, after);
+            self.notify_tr("Save As makes a copy. To save this file, use Save.");
+            return false;
         }
-        let Some(bytes) = self.copy_bytes(id, Some(dest)) else { return false };
+        let Some(bytes) = self.copy_bytes(id, lock) else { return false };
         if let Err(e) = write_atomically(dest, &bytes) {
             self.notify_fmt("Couldn't save {name}: {e}", &[("name", dest), ("e", &e.to_string())]);
             return false;
@@ -337,6 +373,16 @@ impl PdfCraftApp {
     /// succeeds, so a save that fails or is cancelled asks again too.
     pub(crate) fn answer_lock_signatures(&mut self, lock: bool, remember: bool) {
         let Some(p) = self.pending_lock.take() else { return };
+        // Save As: the answer is for this copy only. The document and the preference stay as
+        // they are (`save_copy` locks the marks in the copy's bytes).
+        if p.target == SaveTarget::Copy {
+            self.lock_answered = Some(p.id);
+            self.copy_lock = Some((p.id, lock));
+            if let Some(index) = self.views.iter().position(|v| v.id == p.id) {
+                self.save_then(index, p.target, p.after);
+            }
+            return;
+        }
         if lock && !self.flatten_fill_sign_on_save && !self.flatten_fill_sign_in(p.id) {
             return;
         }

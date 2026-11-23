@@ -246,3 +246,83 @@ fn page_images_are_jpeg_named_and_written_as_jpeg() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Save As writes copies; it never writes over the document's own file (that is Save).
+#[test]
+fn a_copy_picked_onto_the_document_s_own_file_is_refused() {
+    let dir = scratch("own");
+    let orig = dir.join("orig.pdf");
+    let (mut h, c, original) = edited_file(&dir, &orig);
+    let before = doc_state(&h);
+    run_via(&mut h, &c, "file.save_as", "palette");
+    assert!(crate::support::step_until(&mut h, |h| toast(h).contains("use Save")), "it says to use Save: {}", toast(&h));
+    assert_eq!(std::fs::read(&orig).unwrap(), original, "the file is untouched");
+    assert_eq!(doc_state(&h), before, "the document is still edited");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The names in `dir`, sorted.
+fn names(dir: &std::path::Path) -> Vec<String> {
+    let mut v: Vec<String> = std::fs::read_dir(dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+    v.sort();
+    v
+}
+
+/// S5 review I2: a many-file export never replaces existing files unasked. It asks once, saying
+/// how many; Cancel writes nothing, Replace writes them all.
+#[test]
+fn page_images_ask_once_before_replacing_existing_files() {
+    let dir = scratch("replace");
+    std::fs::write(dir.join("doc-1.png"), b"mine").unwrap();
+    let d = dir.to_string_lossy().into_owned();
+    let (mut h, _c) = harness(move |app| {
+        app.open_bytes("doc.pdf", None, fixture(2)).unwrap();
+        app.export_dir_override = Some(d);
+    });
+    let export = |h: &mut Harness<'static, PdfCraftApp>| {
+        assert!(h.state_mut().execute("export.image"));
+        h.run_steps(2);
+        h.get_by_label("Export").click();
+        h.run_steps(4);
+    };
+    export(&mut h);
+    assert_eq!(h.state().dialog, Some(pdfcraft_ui_egui::Dialog::ReplaceFiles), "it asks");
+    h.get_by_label_contains("1 of the files to export already exist");
+    h.get_by_label("Cancel").click();
+    h.run_steps(3);
+    assert_eq!(names(&dir), ["doc-1.png"], "Cancel writes nothing");
+    assert_eq!(std::fs::read(dir.join("doc-1.png")).unwrap(), b"mine");
+    export(&mut h);
+    h.get_by_label("Replace").click();
+    h.run_steps(4);
+    assert_eq!(names(&dir), ["doc-1.png", "doc-2.png"], "Replace writes every page");
+    assert!(std::fs::read(dir.join("doc-1.png")).unwrap().starts_with(b"\x89PNG"), "replaced by the page image");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The Export dialog's formats (menu or `ui.dialog export-*`) deliver as the Save As plan says:
+/// on the web, one download per file, typed as written.
+#[test]
+fn every_export_dialog_downloads_its_files_on_the_web() {
+    let (mut h, c) = harness(|app| {
+        app.save_as_runtime = Some(Runtime::WebHosted);
+        app.open_bytes("doc.pdf", None, fixture(2)).unwrap();
+    });
+    for (how, expected) in
+        [("export.image", vec![("doc-1.png", "image/png"), ("doc-2.png", "image/png")]), ("export-text", vec![("doc.txt", "text/plain")])]
+    {
+        h.state_mut().downloads.clear();
+        if how.starts_with("export.") {
+            assert!(h.state_mut().execute(how));
+        } else {
+            let rx = c.send("ui.set", json!({ "key": "dialog", "value": how }));
+            assert!(crate::support::step_until(&mut h, |_| rx.try_recv().is_ok()), "the control channel opens {how}");
+        }
+        h.run_steps(2);
+        h.get_by_label("Export").click();
+        h.run_steps(4);
+        let got: Vec<(String, String)> = h.state().downloads.iter().map(|(n, m, _)| (n.clone(), m.clone())).collect();
+        let expected: Vec<(String, String)> = expected.iter().map(|(n, m)| (n.to_string(), m.to_string())).collect();
+        assert_eq!(got, expected, "{how}");
+    }
+}
