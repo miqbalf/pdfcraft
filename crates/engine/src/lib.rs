@@ -29,6 +29,7 @@ pub mod dates;
 mod document;
 mod edit;
 mod error;
+pub mod esign;
 pub mod export;
 pub mod field_table;
 mod fill_sign;

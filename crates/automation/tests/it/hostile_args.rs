@@ -313,6 +313,73 @@ fn no_tool_panics_on_hostile_arguments() {
     assert!(failures.is_empty(), "{} tool call(s) panicked; the first is: {}", failures.len(), failures.first().map_or("", String::as_str));
 }
 
+/// The e-sign mark JSON (`esign::graphic_from_json`) is a hostile-input surface of its own: a
+/// signer's browser sends it to the seal worker. Every zoo value, whole or inside each field of
+/// each kind, and the refused cases must come back as an error or an `Ok`, never a panic; the
+/// cases past a cap must be refused as too large.
+#[test]
+fn graphic_from_json_survives_hostile_input() {
+    use base64::Engine as _;
+    use pdfcraft_engine::esign::{EsignError, graphic_from_json};
+
+    let call = |v: &Value| catch_unwind(AssertUnwindSafe(|| graphic_from_json(v, "Alice Example"))).map_err(|_| format!("panic on {v}"));
+    let mut failures = Vec::new();
+    let mut check = |v: Value| {
+        if let Err(e) = call(&v) {
+            failures.push(e);
+        }
+    };
+    let keys = ["kind", "strokes", "text", "png", "name", "x"];
+    let kinds = ["strokes", "typed", "name", "image", "outlines", ""];
+    for bad in zoo() {
+        check(bad.clone());
+        for kind in kinds {
+            for key in keys {
+                let mut obj = serde_json::Map::new();
+                obj.insert("kind".into(), json!(kind));
+                obj.insert(key.into(), bad.clone());
+                check(Value::Object(obj));
+            }
+            check(json!({ "kind": kind, "strokes": [[bad.clone()], bad.clone()], "text": bad.clone() }));
+            check(json!({ "kind": kind, "strokes": [[[bad.clone(), bad.clone()]]] }));
+        }
+    }
+
+    // The refused cases: past each cap by one, and the shapes that are not a mark.
+    let stroke = |n: usize| Value::Array((0..n).map(|i| json!([i as f64 / 4000.0, 0.5])).collect());
+    let png_header = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+    let mut huge = png_header.to_vec();
+    huge.resize(512 * 1024 + 1, 0);
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let too_large = [
+        json!({ "kind": "strokes", "strokes": vec![stroke(1); 65] }),
+        json!({ "kind": "strokes", "strokes": [stroke(2001)] }),
+        json!({ "kind": "typed", "text": "a".repeat(101) }),
+        json!({ "kind": "image", "png": b64(&huge) }),
+        json!({ "kind": "image", "png": "A".repeat(2_000_000) }),
+    ];
+    for v in &too_large {
+        match call(v) {
+            Ok(Err(EsignError::GraphicTooLarge(_))) => {}
+            other => failures.push(format!("not refused as too large: {other:?}")),
+        }
+    }
+    let bad_graphic = [
+        json!({ "kind": "strokes", "strokes": [[[f64::NAN, 0.0]]] }),
+        json!({ "kind": "image", "png": b64(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]) }),
+        json!({ "kind": "image", "png": b64(&png_header) }),
+        json!({ "kind": "scribble" }),
+        json!([]),
+    ];
+    for v in &bad_graphic {
+        match call(v) {
+            Ok(Err(EsignError::BadGraphic(_))) => {}
+            other => failures.push(format!("not refused as a bad graphic: {other:?}")),
+        }
+    }
+    assert!(failures.is_empty(), "{} failure(s); the first is: {}", failures.len(), failures.first().map_or("", String::as_str));
+}
+
 #[test]
 fn no_tool_escapes_the_root() {
     let base = tmp("escape");
