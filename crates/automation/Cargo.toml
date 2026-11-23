@@ -32,6 +32,8 @@ mcp = ["dep:base64", "dep:craft-jsonrpc", "dep:craft-mcp-server"]
 [dev-dependencies]
 # The hostile-input sweep builds base64 marks (esign::graphic_from_json); already in Cargo.lock.
 base64 = "0.23"
+# The sweep signs with every accepted mark, to show it draws.
+pdfcraft-sign = { workspace = true }
 # Synthetic printer profiles for the app-managed print colour tests.
 craft-cms = { workspace = true }
 craft-image-codecs = { workspace = true }

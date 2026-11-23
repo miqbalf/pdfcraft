@@ -30,6 +30,15 @@ pub const MAX_PNG_SIDE: u32 = 1024;
 /// At most this many characters in a typed mark.
 pub const MAX_TYPED_CHARS: usize = 100;
 
+/// A stroke coordinate stays within this distance of the origin. The drawing pad is 1 wide, so
+/// this is a thousand pads: far more than any real mark, far less than what `draw` refuses.
+const MAX_COORD: f64 = 1_000.0;
+
+/// `n` when it is a finite number inside the box a mark may use.
+fn coord(n: f64) -> Option<f64> {
+    (n.is_finite() && n.abs() <= MAX_COORD).then_some(n)
+}
+
 const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 fn bad(why: impl Into<String>) -> EsignError {
@@ -50,7 +59,8 @@ pub fn graphic_from_json(v: &Value, display_name: &str) -> Result<Graphic, Esign
             let text = obj.get("text").and_then(Value::as_str).ok_or_else(|| bad("The typed signature has no text."))?;
             typed(text)
         }
-        Some("name") => typed(display_name),
+        // The name is the server's, never the signer's: an over-long one is cut, not refused.
+        Some("name") => typed(&display_name.chars().take(MAX_TYPED_CHARS).collect::<String>()),
         Some("image") => image(obj),
         Some(other) => Err(bad(format!("The signature mark kind \"{}\" is not supported.", other.chars().take(40).collect::<String>()))),
         None => Err(bad("The signature mark has no kind.")),
@@ -83,9 +93,9 @@ fn strokes(obj: &Map<String, Value>) -> Result<Graphic, EsignError> {
         let mut stroke = Vec::with_capacity(points.len());
         for p in points {
             let xy = p.as_array().filter(|a| a.len() == 2).ok_or_else(|| bad("A point of the drawn signature is not an [x, y] pair."))?;
-            let coord = |i: usize| xy.get(i).and_then(Value::as_f64).filter(|n| n.is_finite());
+            let coord = |i: usize| xy.get(i).and_then(Value::as_f64).and_then(coord);
             let (Some(x), Some(y)) = (coord(0), coord(1)) else {
-                return Err(bad("A point of the drawn signature is not a finite number."));
+                return Err(bad("A point of the drawn signature is not a finite number within ±1000."));
             };
             stroke.push([x, y]);
         }
@@ -115,9 +125,18 @@ fn image(obj: &Map<String, Value>) -> Result<Graphic, EsignError> {
     if !bytes.starts_with(&PNG_SIGNATURE) {
         return Err(bad("The signature image is not a PNG."));
     }
+    if !ends_at_iend(&bytes) {
+        return Err(bad("The signature image has data after the end of the PNG."));
+    }
+    // The header first, so a side over the cap is named as such and the decoder's own limits
+    // (memory) only ever speak about memory.
+    let (w, h) = craft_image_codecs::probe_size(&bytes).map_err(|_| bad("The signature image is not a readable PNG."))?;
+    if w > MAX_PNG_SIDE || h > MAX_PNG_SIDE {
+        return Err(too_large(format!("The signature image is larger than {MAX_PNG_SIDE} pixels on a side.")));
+    }
     let opts = DecodeOptions { keep_orientation: true, limits: limits() };
     let img = craft_image_codecs::decode_as_with(Format::Png, &bytes, &opts).map_err(|e| match e {
-        CodecError::LimitExceeded(_) => too_large(format!("The signature image is larger than {MAX_PNG_SIDE} pixels on a side.")),
+        CodecError::LimitExceeded(_) => too_large("The signature image needs too much memory to open."),
         _ => bad("The signature image is not a readable PNG."),
     })?;
     let (width, height) = (img.width(), img.height());
@@ -125,6 +144,24 @@ fn image(obj: &Map<String, Value>) -> Result<Graphic, EsignError> {
         return Err(too_large(format!("The signature image is larger than {MAX_PNG_SIDE} pixels on a side.")));
     }
     Ok(Graphic::Image { width, height, rgba: Arc::new(img.to_rgba8()) })
+}
+
+/// Whether the chunks of the PNG in `b` run to an `IEND` that is the last thing in the file: a
+/// PNG with a payload behind it (a polyglot) is refused.
+fn ends_at_iend(b: &[u8]) -> bool {
+    let mut at = PNG_SIGNATURE.len();
+    while let Some(head) = b.get(at..at + 8) {
+        let len = u32::from_be_bytes([head[0], head[1], head[2], head[3]]) as usize;
+        let Some(end) = at.checked_add(12).and_then(|n| n.checked_add(len)) else { return false };
+        if end > b.len() {
+            return false;
+        }
+        if &head[4..8] == b"IEND" {
+            return end == b.len();
+        }
+        at = end;
+    }
+    false
 }
 
 /// The JSON form of `g`: strokes and images only. Outlines (a typed mark already drawn) have no
@@ -166,5 +203,20 @@ pub fn graphic_to_json(g: &Graphic) -> Result<Value, EsignError> {
             Ok(json!({ "kind": "image", "png": base64::engine::general_purpose::STANDARD.encode(png) }))
         }
         Graphic::Outlines(_) => Err(bad("A typed signature already drawn has no JSON form; send its text instead.")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coord_refuses_non_finite_and_out_of_box_numbers() {
+        for n in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1_000.5, -1_000.5, 1e308, -1e308] {
+            assert_eq!(coord(n), None, "{n}");
+        }
+        for n in [0.0, -0.0, 0.5, 1_000.0, -1_000.0] {
+            assert_eq!(coord(n), Some(n));
+        }
     }
 }

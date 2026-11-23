@@ -22,6 +22,7 @@
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use pdfcraft_automation::file_access::AutomationRoots;
 use pdfcraft_automation::{Automation, ToolError, tools};
@@ -313,6 +314,25 @@ fn no_tool_panics_on_hostile_arguments() {
     assert!(failures.is_empty(), "{} tool call(s) panicked; the first is: {}", failures.len(), failures.first().map_or("", String::as_str));
 }
 
+/// A one-page PDF with a classic cross-reference table.
+fn one_page_pdf() -> Vec<u8> {
+    let objs =
+        ["<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>", "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] >>"];
+    let mut out = b"%PDF-1.7\n".to_vec();
+    let mut at = Vec::new();
+    for (i, o) in objs.iter().enumerate() {
+        at.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{o}\nendobj\n", i + 1).as_bytes());
+    }
+    let xref = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n0000000000 65535 f \n", objs.len() + 1).as_bytes());
+    for a in at {
+        out.extend_from_slice(format!("{a:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(format!("trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n", objs.len() + 1).as_bytes());
+    out
+}
+
 /// The e-sign mark JSON (`esign::graphic_from_json`) is a hostile-input surface of its own: a
 /// signer's browser sends it to the seal worker. Every zoo value, whole or inside each field of
 /// each kind, and the refused cases must come back as an error or an `Ok`, never a panic; the
@@ -323,11 +343,33 @@ fn graphic_from_json_survives_hostile_input() {
     use pdfcraft_engine::esign::{EsignError, graphic_from_json};
 
     let call = |v: &Value| catch_unwind(AssertUnwindSafe(|| graphic_from_json(v, "Alice Example"))).map_err(|_| format!("panic on {v}"));
+    // Every mark that is accepted must also be drawable: signing with it may not fail.
+    let id = pdfcraft_sign::pkcs12::open(
+        &std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("../sign/tests/data/ec-p256.p12")).expect("test ID"),
+        "test",
+    )
+    .expect("open the ID");
+    let page = Arc::new(one_page_pdf());
+    let draws = |g: &pdfcraft_sign::Graphic| -> Result<(), String> {
+        let doc = pdfcraft_cos::Document::open(page.clone()).map_err(|e| format!("fixture: {e}"))?;
+        let opts = pdfcraft_sign::SignOptions {
+            rect: Some([20.0, 20.0, 220.0, 80.0]),
+            date: "D:20261123000000Z".into(),
+            graphic: Some(g.clone()),
+            ..Default::default()
+        };
+        let signed = catch_unwind(AssertUnwindSafe(|| pdfcraft_sign::sign(&doc, &id, &opts))).map_err(|_| format!("panic drawing {g:?}"))?;
+        signed.map(|_| ()).map_err(|e| format!("an accepted mark {g:?} does not draw: {e}"))
+    };
     let mut failures = Vec::new();
-    let mut check = |v: Value| {
-        if let Err(e) = call(&v) {
-            failures.push(e);
+    let mut check = |v: Value| match call(&v) {
+        Err(e) => failures.push(e),
+        Ok(Ok(g)) => {
+            if let Err(e) = draws(&g) {
+                failures.push(e);
+            }
         }
+        Ok(Err(_)) => {}
     };
     let keys = ["kind", "strokes", "text", "png", "name", "x"];
     let kinds = ["strokes", "typed", "name", "image", "outlines", ""];
@@ -366,6 +408,7 @@ fn graphic_from_json_survives_hostile_input() {
     }
     let bad_graphic = [
         json!({ "kind": "strokes", "strokes": [[[f64::NAN, 0.0]]] }),
+        json!({ "kind": "strokes", "strokes": [[[-1e308, 0.0], [1e308, 0.0]]] }),
         json!({ "kind": "image", "png": b64(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]) }),
         json!({ "kind": "image", "png": b64(&png_header) }),
         json!({ "kind": "scribble" }),

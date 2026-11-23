@@ -23,9 +23,10 @@ pub enum EsignError {
     NoField(String),
     #[error("{0}")]
     Validation(String),
-    #[error(transparent)]
+    // A fixed sentence: the inner text can hold paths or library detail, so it stays off the wire.
+    #[error("The PDF could not be signed.")]
     Sign(#[from] pdfcraft_sign::SignError),
-    #[error(transparent)]
+    #[error("The PDF could not be edited.")]
     Edit(#[from] crate::EditError),
 }
 

@@ -43,7 +43,8 @@ pdfcraft-geom = { workspace = true }
 thiserror = { workspace = true }
 # The e-sign mark's JSON form (`esign::graphic`): PNGs travel as base64. Both already in Cargo.lock.
 base64 = "0.23"
-serde_json = { workspace = true }
+# `float_roundtrip`: a mark written as JSON text and read again is the same doubles, bit for bit.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # Already in the graph (url and idna through webbrowser, icu_properties through boa): they show
 # the host of a document's link the way the browser reads it (links::display_host).
 url = "2.5"
