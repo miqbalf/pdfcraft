@@ -29,6 +29,7 @@ impl Paper {
 
 /// The paper for a locale tag's region (`en_US.UTF-8`, `fr-BE`, `es_MX`); `None` without a region.
 /// The Letter regions are CLDR's `paperSize` US-Letter territories.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn paper_for_tag(tag: &str) -> Option<Paper> {
     Some(match region_of(tag)?.as_str() {
         "US" | "CA" | "MX" | "PH" | "PR" | "BZ" | "CL" | "CO" | "CR" | "GT" | "NI" | "PA" | "SV" | "VE" => Paper::Letter,

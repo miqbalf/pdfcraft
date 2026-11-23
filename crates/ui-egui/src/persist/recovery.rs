@@ -158,6 +158,8 @@ impl RecoveryStore {
             Err(TryLockError::WouldBlock) => true,
             Ok(()) => {
                 let _ = file.unlock();
+                // Closed before the removal (Windows cannot remove an open file); on the web `File` has no Drop.
+                #[cfg_attr(target_arch = "wasm32", allow(clippy::drop_non_drop))]
                 drop(file);
                 let _ = std::fs::remove_file(&path);
                 false

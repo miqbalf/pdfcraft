@@ -1388,7 +1388,10 @@ fn dialog_overwrite_changed(ui: &mut egui::Ui, app: &mut PdfCraftApp, req: &mut 
     #[cfg(not(target_arch = "wasm32"))]
     let name = app.pending_overwrite.as_ref().and_then(|p| app.session.get(p.id)).map(|d| d.name.clone()).unwrap_or_default();
     #[cfg(target_arch = "wasm32")]
-    let name = String::new();
+    let name = {
+        let _ = &app;
+        String::new()
+    };
     ui.label(egui::RichText::new(tl!("Save over the changed file?")).font(theme::semibold(18.0)));
     ui.add_space(8.0);
     ui.label(crate::i18n::fmt(

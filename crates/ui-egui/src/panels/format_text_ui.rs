@@ -29,6 +29,7 @@ pub(crate) enum FontChoice {
     /// Load font…: pick a font file.
     Load,
     /// A font file installed on this computer.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Installed(std::path::PathBuf),
 }
 

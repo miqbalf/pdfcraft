@@ -407,6 +407,7 @@ impl PdfCraftApp {
     }
 
     /// The tabs, one per document (the last session lists each file once).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) fn first_views(&self) -> impl Iterator<Item = &crate::DocView> {
         self.views.iter().enumerate().filter(|(i, v)| !self.views.iter().take(*i).any(|w| w.id == v.id)).map(|(_, v)| v)
     }

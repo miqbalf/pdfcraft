@@ -51,6 +51,7 @@ impl Updates {
     }
 }
 
+#[cfg_attr(target_arch = "wasm32", allow(clippy::derivable_impls))]
 impl Default for Updates {
     fn default() -> Self {
         Self {
