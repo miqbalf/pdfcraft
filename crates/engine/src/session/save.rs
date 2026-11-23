@@ -350,6 +350,16 @@ impl Session {
         Ok(Arc::new(pdfcraft_sign::sign(&cos, id, &opts)?))
     }
 
+    /// The document as [`Session::sign`] hands it to the signer: its current state without typed
+    /// Password-field values, its fields drawn when the signature is its first and the form asks
+    /// viewers to draw them. For a caller inside the engine that signs it itself and needs the
+    /// signer's own error.
+    pub(crate) fn signing_copy(&self, doc: DocId) -> Result<std::borrow::Cow<'_, pdfcraft_cos::Document>, EditError> {
+        let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
+        Ok(drawn_for_first_signature(writable(&editor.cos)?))
+    }
+
     /// [`Session::sign`], embedding an RFC 3161 signature timestamp (PAdES B-T) produced by
     /// `tsa`. The transport lives with the caller; the engine never opens a socket.
     pub fn sign_with_timestamp(

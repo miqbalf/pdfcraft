@@ -35,6 +35,9 @@ pub struct Session {
     /// injected time AS local time and zeroes the zone, so injecting only it leaves either the
     /// local dates or the UTC ones wrong by the zone's offset.
     utc_offset: Option<fn() -> i64>,
+    /// A time of this session alone (seconds since the epoch, UTC), read before `clock`: what the
+    /// session writes then depends on its inputs only ([`Session::with_fixed_time`]).
+    fixed_time: Option<i64>,
     /// Certificates trusted for signing (Acrobat: Trusted Certificates).
     pub(crate) trust: Arc<TrustStore>,
     /// The words signature status layers are drawn with, in the interface language.

@@ -84,9 +84,36 @@ fn refusal(e: EditError) -> EsignError {
         EditError::NotPermitted(_) => {
             EsignError::Validation("This PDF's security settings do not allow changes; remove its owner password first.".into())
         }
-        EditError::Form(_) => EsignError::Validation("This PDF has form fields whose names clash with the signature fields.".into()),
+        // The one form error prepare's fields can meet once places and sizes are checked: a name
+        // taken by a field of the PDF (`add_field` refuses it as invalid).
+        EditError::Form(pdfcraft_forms::FormError::Invalid(_)) => {
+            EsignError::Validation("This PDF has form fields whose names clash with the signature fields.".into())
+        }
         other => other.into(),
     }
+}
+
+/// The most signers one request may have (the audit page's own cap).
+pub const MAX_SIGNERS: usize = 500;
+
+/// Why `cos` must not get a signature request although no field of it is signed: its catalog
+/// names a signature elsewhere (usage rights, `/Perms /UR3`; a certification, `/Perms /DocMDP`),
+/// which a new revision would break, or it is an XFA form, where viewers that lay out the XFA
+/// would not show the new fields.
+fn signed_elsewhere_or_xfa(cos: &pdfcraft_cos::Document) -> Option<EsignError> {
+    let catalog = cos.root().map(|r| cos.get(r))?;
+    let catalog = catalog.as_dict()?;
+    if let Some(perms) = catalog.get(b"Perms").map(|p| cos.resolve(p))
+        && perms.as_dict().is_some_and(|p| [&b"UR3"[..], b"UR", b"DocMDP"].iter().any(|k| p.get(k).is_some()))
+    {
+        return Some(EsignError::AlreadySigned);
+    }
+    let form = catalog.get(b"AcroForm").map(|f| cos.resolve(f))?;
+    form.as_dict().is_some_and(|f| f.get(b"XFA").is_some()).then(|| {
+        EsignError::Validation(
+            "This PDF is an XFA form; signature fields added to it would not show in every viewer, so it cannot be sent for signatures.".into(),
+        )
+    })
 }
 
 /// A place may lie this far outside its page's visible area (rounding in the browser).
@@ -98,6 +125,9 @@ pub fn prepare(bytes: &[u8], header: &AuditHeader, signers: &[SignerSlot], date:
     let now = parse_date(date)?;
     if signers.is_empty() {
         return Err(EsignError::Validation("A signature request needs at least one signer.".into()));
+    }
+    if signers.len() > MAX_SIGNERS {
+        return Err(EsignError::Validation(format!("A signature request can have at most {MAX_SIGNERS} signers.")));
     }
     let mut seen = BTreeSet::new();
     if !signers.iter().all(|s| seen.insert(s.position)) {
@@ -112,6 +142,9 @@ pub fn prepare(bytes: &[u8], header: &AuditHeader, signers: &[SignerSlot], date:
         return Err(EsignError::AlreadySigned);
     }
     let editor = doc.editor.as_ref().ok_or_else(|| EsignError::Validation("This PDF can be read but not changed.".into()))?;
+    if let Some(refused) = signed_elsewhere_or_xfa(&editor.cos) {
+        return Err(refused);
+    }
     let rid = header.request_id;
     // Every field of this request is under `CraftOffice.R<id>.`: a file prepared before is refused.
     let prefix = format!("CraftOffice.R{rid}.");

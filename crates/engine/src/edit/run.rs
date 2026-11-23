@@ -313,12 +313,23 @@ impl EditCtx {
     /// The context for one edit: `now` (the session's clock) dates it, and with `salt` seeds the
     /// ids it makes.
     pub(crate) fn new(now: Option<i64>, salt: u64) -> Self {
+        Self::seeded(now, salt, true)
+    }
+
+    /// [`EditCtx::new`] for a session whose time is fixed ([`crate::Session::with_fixed_time`]):
+    /// the ids it makes depend on `now` and `salt` alone, never on the wall clock, so the same
+    /// inputs give the same bytes.
+    pub(crate) fn fixed(now: i64, salt: u64) -> Self {
+        Self::seeded(Some(now), salt, false)
+    }
+
+    fn seeded(now: Option<i64>, salt: u64, wall: bool) -> Self {
         let mut seed = 0x9E37_79B9_7F4A_7C15u64 ^ salt;
         if let Some(t) = now {
             seed ^= (t as u64).rotate_left(17);
         }
         #[cfg(not(target_arch = "wasm32"))]
-        if now.is_some() {
+        if wall && now.is_some() {
             // Real clock: mix in sub-second time so ids from two sessions don't collide.
             seed ^= std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos() as u64).unwrap_or(0) << 32;
         }

@@ -139,6 +139,7 @@ impl Session {
     /// [`Session::apply`], giving back what an [`Edit::PrepareText`] did (`None` for other edits).
     fn apply_reporting(&mut self, id: DocId, edit: Edit) -> Result<Option<pdfcraft_edit::text::forms::Preparation>, EditError> {
         let now = self.now();
+        let fixed = self.fixed_time;
         let today = self.today();
         let js_off = self.js_off;
         let highlight = self.field_highlight;
@@ -154,7 +155,11 @@ impl Session {
         let name = doc.name.clone();
         let is_xfa = doc.info.xfa.is_some();
         let mut scope = scope_of(&edit);
-        let mut cx = EditCtx::new(now, doc.generation ^ (id.0 << 48));
+        let salt = doc.generation ^ (id.0 << 48);
+        let mut cx = match fixed {
+            Some(t) => EditCtx::fixed(t, salt),
+            None => EditCtx::new(now, salt),
+        };
         if !js_off {
             cx.xfa = doc.xfa_template.clone();
         }

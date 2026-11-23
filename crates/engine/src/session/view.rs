@@ -14,6 +14,17 @@ impl Session {
         self
     }
 
+    /// Fix this session's time at `secs` (UTC, seconds since the epoch), for this session alone:
+    /// its dates, its local time (taken as UTC) and the ids its edits make depend on `secs` and
+    /// the session's own inputs only, never on the wall clock or on another session. A server
+    /// step whose output must be the same bytes for the same inputs (e-sign) opens its documents
+    /// in such a session. It takes precedence over [`Session::with_clock`] and
+    /// [`Session::with_wall_clock`].
+    pub fn with_fixed_time(mut self, secs: i64) -> Self {
+        self.fixed_time = Some(secs);
+        self
+    }
+
     /// Multiply the time an XFA form's scripts may take by `factor` (tests): the 3 s the
     /// scripts of an opening or a change share, the 5 s of a click's, the 10 s the script
     /// engine has to start, and each script's own 1 s or 3 s. A test that checks what the
@@ -40,6 +51,9 @@ impl Session {
     /// Seconds to add to UTC for the local time of this session: the injected zone, else 0 under
     /// the test clock (which is already local), else the system's.
     pub(super) fn local_offset(&self) -> i64 {
+        if self.fixed_time.is_some() {
+            return 0;
+        }
         match (self.utc_offset, self.clock) {
             (Some(zone), _) => zone(),
             (None, Some(_)) => 0,
@@ -53,6 +67,9 @@ impl Session {
     }
 
     pub(crate) fn now(&self) -> Option<i64> {
+        if let Some(t) = self.fixed_time {
+            return Some(t);
+        }
         if let Some(c) = self.clock {
             return Some(c());
         }

@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use pdfcraft_engine::esign::{
-    AuditHeader, EsignError, Placement, SignerSlot, audit_document, completed_field, inspect, prepare, row_field, seal_field, signer_field,
+    AuditHeader, EsignError, MAX_SIGNERS, Placement, SignerSlot, audit_document, completed_field, inspect, prepare, row_field, seal_field,
+    signer_field,
 };
 use pdfcraft_engine::export::Exporter;
 use pdfcraft_engine::sign::pkcs12;
@@ -282,11 +283,72 @@ fn damaged_blank() -> Vec<u8> {
 #[test]
 fn prepare_refuses_input_it_cannot_keep_byte_for_byte() {
     let damaged = damaged_blank();
-    match prepare(&damaged, &header(), &slots(), DATE) {
-        Err(e @ EsignError::Validation(_)) => assert!(e.to_string().contains("damaged"), "{e}"),
-        Err(e) => panic!("{e:?}"),
-        Ok(out) => assert!(out.bytes.starts_with(&damaged), "a prepared file always starts with the input bytes"),
+    // The fixture is pinned: the engine itself cannot keep it byte for byte, so prepare's guard
+    // is what the test reaches.
+    let mut s = Session::new().with_clock(|| 1_700_000_000);
+    let id = s.open("x.pdf", None, Arc::new(damaged.clone()), None).expect("opens");
+    s.apply(id, Edit::SetInfo { key: "Title".into(), value: "x".into() }).expect("edits");
+    assert!(!s.save_bytes(id).expect("saves").starts_with(&damaged), "the fixture forces a rewrite");
+    let e = prepare(&damaged, &header(), &slots(), DATE).expect_err("refused");
+    assert!(matches!(e, EsignError::Validation(_)), "{e:?}");
+    assert!(e.to_string().contains("damaged"), "{e}");
+}
+
+/// `blank(1)` with `edit` applied to its catalog, as another program would have written it.
+fn with_catalog(edit: impl FnOnce(&mut pdfcraft_cos::Document, &mut pdfcraft_cos::Dict)) -> Vec<u8> {
+    let bytes = blank(1);
+    let mut doc = cos(&bytes);
+    let root = doc.root().expect("catalog");
+    let mut catalog = doc.get(root).as_dict().cloned().expect("dict");
+    edit(&mut doc, &mut catalog);
+    doc.set(root, pdfcraft_cos::Object::Dict(catalog));
+    pdfcraft_cos::write_incremental(&doc, &pdfcraft_cos::SaveOptions { object_streams: false, ..pdfcraft_cos::SaveOptions::default() })
+        .expect("writes")
+}
+
+fn sig_dict() -> pdfcraft_cos::Object {
+    let mut d = pdfcraft_cos::Dict::new();
+    d.set(b"Type".to_vec(), pdfcraft_cos::Object::name("Sig"));
+    pdfcraft_cos::Object::Dict(d)
+}
+
+#[test]
+fn prepare_refuses_usage_rights_certified_and_xfa_documents() {
+    // Usage rights and a certification are signatures made elsewhere, even with no signed field.
+    for key in ["UR3", "DocMDP"] {
+        let pdf = with_catalog(|doc, c| {
+            let sig = doc.add(sig_dict());
+            let mut perms = pdfcraft_cos::Dict::new();
+            perms.set(key.as_bytes().to_vec(), pdfcraft_cos::Object::Ref(sig));
+            c.set(b"Perms".to_vec(), pdfcraft_cos::Object::Dict(perms));
+        });
+        let err = prepare(&pdf, &header(), &slots(), DATE).expect_err(key);
+        assert!(matches!(err, EsignError::AlreadySigned), "{key}: {err:?}");
+        assert_eq!(err.to_string(), "This PDF is already signed; a new signature would break it");
     }
+    // A hybrid XFA form: viewers that lay out the XFA would not show the new fields.
+    let pdf = with_catalog(|doc, c| {
+        let body =
+            b"<xdp:xdp xmlns:xdp=\"http://ns.adobe.com/xdp/\"><template xmlns=\"http://www.xfa.org/schema/xfa-template/3.3/\"/></xdp:xdp>".to_vec();
+        let mut sd = pdfcraft_cos::Dict::new();
+        sd.set(b"Length".to_vec(), pdfcraft_cos::Object::Int(body.len() as i64));
+        let xfa = doc.add(pdfcraft_cos::Object::Stream(pdfcraft_cos::Stream::from_raw(sd, body)));
+        let mut form = pdfcraft_cos::Dict::new();
+        form.set(b"Fields".to_vec(), pdfcraft_cos::Object::Array(Vec::new()));
+        form.set(b"XFA".to_vec(), pdfcraft_cos::Object::Ref(xfa));
+        c.set(b"AcroForm".to_vec(), pdfcraft_cos::Object::Dict(form));
+    });
+    let err = prepare(&pdf, &header(), &slots(), DATE).expect_err("xfa");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("XFA"), "{err}");
+}
+
+#[test]
+fn prepare_caps_the_signers() {
+    let many = |n: u32| (1..=n).map(|p| slot(p, "u", "U", None)).collect::<Vec<_>>();
+    let err = prepare(&blank(1), &header(), &many(MAX_SIGNERS as u32 + 1), DATE).expect_err("over the cap");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains(&MAX_SIGNERS.to_string()), "{err}");
 }
 
 #[test]

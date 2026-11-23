@@ -1,16 +1,19 @@
 //! E-sign: platform-sealed signature requests. This module holds what the seal worker and the
 //! host share: the error type with its wire codes, the JSON form of a signer's mark, the
-//! inspection of a PDF, and the prepare step that adds the request's fields and audit page.
+//! inspection of a PDF, the prepare step that adds the request's fields and audit page, and the
+//! seal that signs each signer's field and, after the last, locks the document.
 
 mod audit_page;
 mod graphic;
 mod inspect;
 mod prepare;
+mod seal;
 
 pub use audit_page::audit_document;
 pub use graphic::{MAX_PNG_BYTES, MAX_PNG_SIDE, MAX_STROKE_POINTS, MAX_STROKES, MAX_TYPED_CHARS, graphic_from_json, graphic_to_json};
 pub use inspect::{Inspection, SignatureSummary, inspect};
-pub use prepare::{AuditHeader, Placement, Prepared, SignerSlot, completed_field, prepare, row_field, seal_field, signer_field};
+pub use prepare::{AuditHeader, MAX_SIGNERS, Placement, Prepared, SignerSlot, completed_field, prepare, row_field, seal_field, signer_field};
+pub use seal::{FinalSeal, Sealed, SignerSeal, seal};
 
 /// Why an e-sign step was refused. Each variant has a stable wire code ([`EsignError::code`]);
 /// the `Display` text is an English sentence a signer can read.

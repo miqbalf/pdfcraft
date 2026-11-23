@@ -4,7 +4,6 @@
 //! Inspecting never refuses a signed or encrypted PDF: those are answers, not errors. Only bytes
 //! that are not a PDF at all are refused.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use pdfcraft_render::OpenError;
@@ -77,35 +76,17 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     DigestAlg::Sha256.digest(&[bytes]).iter().map(|b| format!("{b:02x}")).collect()
 }
 
-thread_local! {
-    /// The time an e-sign session's clock reads (seconds since the epoch, UTC), so that what a
-    /// step writes depends on its inputs only. A session's clock is a plain function, so the
-    /// value it reads lives here; each step sets it before it opens its session, on its thread.
-    static NOW: Cell<i64> = const { Cell::new(0) };
-}
-
-fn fixed_now() -> i64 {
-    NOW.with(Cell::get)
-}
-
-fn utc() -> i64 {
-    0
-}
-
 /// What opening a PDF for an e-sign step gave.
 pub(super) enum Opened {
     Doc(Session, DocId),
     NeedsPassword,
 }
 
-/// A session whose clock reads `now` (UTC), with document scripts off: the PDFs are untrusted,
-/// and nothing here needs them.
-///
-/// The clock is per thread, not per session: a second `session_at` on the same thread moves
-/// the first session's clock too. Open one at a time, or both at the same `now`.
+/// A session whose clock reads `now` (UTC) for it alone, with document scripts off: the PDFs
+/// are untrusted, and nothing here needs them. What it writes depends on its inputs only
+/// ([`Session::with_fixed_time`]), however many such sessions a thread holds.
 pub(super) fn session_at(now: i64) -> Session {
-    NOW.with(|c| c.set(now));
-    let mut session = Session::new().with_wall_clock(fixed_now, utc);
+    let mut session = Session::new().with_fixed_time(now);
     session.set_javascript(false);
     session
 }
