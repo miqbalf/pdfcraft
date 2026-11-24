@@ -188,10 +188,16 @@ fn checked(bytes: &[u8], now: i64, trust: &[pdfcraft_sign::Certificate], made: &
     Ok((doc.signatures.iter().map(SignatureSummary::from).collect(), timestamped))
 }
 
-/// The certificate the seal's signatures are checked against: the root of the identity's chain,
-/// or its own certificate when it has none.
+/// The certificate a seal made with `id` is checked against: the top of the chain built from its
+/// certificate through the file's others (whatever order the file lists them in), or the
+/// certificate itself when it has no issuer there. The seal worker trusts the same one in inspect
+/// (P5 review m8).
+pub fn trust_root(id: &pdfcraft_sign::DigitalId) -> pdfcraft_sign::Certificate {
+    pdfcraft_sign::x509::build_chain(&id.certificate, &id.chain, None).last().map(|c| (*c).clone()).unwrap_or_else(|| id.certificate.clone())
+}
+
 fn root_of(id: &pdfcraft_sign::DigitalId) -> Vec<pdfcraft_sign::Certificate> {
-    vec![id.chain.last().cloned().unwrap_or_else(|| id.certificate.clone())]
+    vec![trust_root(id)]
 }
 
 /// SHA-256 of the bytes `field`'s signature covers (its `/ByteRange`).

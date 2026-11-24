@@ -230,7 +230,12 @@ fn seal_body(pdf: &[u8], position: u32, last: bool, tsa_url: Option<&str>, graph
         "row_text": format!("{name} ({uid}) signed"),
         "date": format!("2026-11-24T09:0{position}:00Z"),
         "tsa_url": tsa_url,
-        "final": if last { json!({ "completed_text": "Completed; 2 signers", "date": "2026-11-24T09:05:00Z" }) } else { Value::Null },
+        "final": if last {
+            json!({ "completed_text": "Completed; 2 signers", "date": "2026-11-24T09:05:00Z",
+                "instance": "cloud.example.org", "organisation": "Example Org" })
+        } else {
+            Value::Null
+        },
     })
 }
 
@@ -406,14 +411,17 @@ fn dev_tsa_marks_timestamped() {
 }
 
 #[test]
-fn http_tsa_refused_without_insecure_dev() {
-    let w = start("httptsa", &[]);
-    let base = prepared(&w);
-    let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("http://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
-    assert_eq!(r.status, 400);
-    assert_eq!(r.json()["error"], "bad_tsa_url");
-    // A development worker takes it, and finds nobody there.
-    let dev = start("httptsa-dev", &["--insecure-dev"]);
+fn http_tsa_refused_without_allow_http_tsa() {
+    // Readable secrets are another switch: they never allow http:// (N9, P5 nit).
+    for extra in [&[][..], &["--allow-readable-secrets"][..]] {
+        let w = start("httptsa", extra);
+        let base = prepared(&w);
+        let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("http://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
+        assert_eq!(r.status, 400, "{extra:?}");
+        assert_eq!(r.json()["error"], "bad_tsa_url");
+    }
+    // A worker allowed http:// takes it, and finds nobody there.
+    let dev = start("httptsa-dev", &["--allow-http-tsa"]);
     let base = prepared(&dev);
     let r = dev.post("/v1/seal", &seal_body(&base, 1, false, Some("http://127.0.0.1:9/tsr"), json!({ "kind": "name" })));
     assert_eq!(r.status, 503);
@@ -440,25 +448,143 @@ fn refused_start(dir: &Path, why: &str) -> String {
 }
 
 /// A key, password or secret file that group or others can read or change stops the start
-/// (P5 review m10: write bits too), unless --insecure-dev.
+/// (P5 review m10: write bits too; N9: group-read 0640 and 0440 too), unless --allow-readable-secrets.
 #[cfg(unix)]
 #[test]
 fn world_readable_key_refuses_to_start() {
     for file in ["seal.p12", "seal_password", "seal_hmac"] {
-        for mode in [0o644, 0o604, 0o620, 0o602] {
+        for mode in [0o644, 0o604, 0o620, 0o602, 0o640, 0o440, 0o660] {
             let dir = workdir("readable");
             secrets(&dir, "test");
             chmod(&dir.join(file), mode);
             let why = format!("{file} {mode:o}");
             assert!(refused_start(&dir, &why).contains("group or others"), "{why}: says why");
         }
-        // --insecure-dev lets it start.
+        // --allow-readable-secrets lets it start; --allow-http-tsa does not.
         let dir = workdir("readable-dev");
         secrets(&dir, "test");
         chmod(&dir.join(file), 0o644);
-        let w = start_in(&dir, &["--insecure-dev"]);
+        assert!(refused_start_with(&dir, &["--allow-http-tsa"], "http only").contains("group or others"));
+        let w = start_in(&dir, &["--allow-readable-secrets"]);
         assert_eq!(w.get("/v1/health").status, 200);
+        // 0400 (read-only for the owner, as the stacks mount them) is fine without any switch.
+        let dir = workdir("readonly");
+        secrets(&dir, "test");
+        chmod(&dir.join(file), 0o400);
+        assert_eq!(start_in(&dir, &[]).get("/v1/health").status, 200, "{file} 0400");
     }
+}
+
+/// Start a worker in `dir` with `extra`, and wait for it to exit; its stderr.
+fn refused_start_with(dir: &Path, extra: &[&str], why: &str) -> String {
+    let mut child = command(dir, extra).spawn().expect("spawns");
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().expect("waits") {
+            break s;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            panic!("{why}: the worker started");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!status.success(), "{why}");
+    std::fs::read_to_string(dir.join("stderr.log")).unwrap_or_default()
+}
+
+/// N9: the switches that mixed two jobs, and the names the worker made up, are gone (ruling I1).
+#[test]
+fn removed_options_refuse_to_start() {
+    for extra in [&["--insecure-dev"][..], &["--instance", "x"][..], &["--organisation", "y"][..]] {
+        let dir = workdir("removed");
+        secrets(&dir, "test");
+        assert!(refused_start_with(&dir, extra, &format!("{extra:?}")).contains("unknown option"), "{extra:?}");
+    }
+}
+
+/// Ruling I1: the final seal names the instance and organisation the request sends; without them it is refused.
+#[test]
+fn a_final_seal_without_instance_or_organisation_is_400() {
+    let w = start("final-names", &[]);
+    let base = prepared(&w);
+    let one = unb64(&w.post("/v1/seal", &seal_body(&base, 1, false, None, json!({ "kind": "name" }))).json()["pdf"]);
+    for missing in ["instance", "organisation"] {
+        let mut body = seal_body(&one, 2, true, None, json!({ "kind": "name" }));
+        body["final"].as_object_mut().expect("final").remove(missing);
+        let r = w.post("/v1/seal", &body);
+        assert_eq!(r.status, 400, "{missing}: {}", String::from_utf8_lossy(&r.body));
+        assert_eq!(r.json()["error"], "bad_json");
+        assert!(r.json()["message"].as_str().unwrap_or_default().contains(missing));
+        body["final"][missing] = json!("");
+        assert_eq!(w.post("/v1/seal", &body).status, 400, "{missing} empty");
+    }
+    let r = w.post("/v1/seal", &seal_body(&one, 2, true, None, json!({ "kind": "name" })));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    assert!(!w.stderr().contains("worker's own names"));
+}
+
+/// The dev timestamp authority answers whatever address the request names, http:// too (the e2e stack).
+#[test]
+fn dev_tsa_takes_an_http_address() {
+    let w = start("devtsa-http", &["--insecure-dev-tsa"]);
+    let base = prepared(&w);
+    let r = w.post("/v1/seal", &seal_body(&base, 1, false, Some("http://dev-tsa.invalid/tsr"), json!({ "kind": "name" })));
+    assert_eq!(r.status, 200, "{}", String::from_utf8_lossy(&r.body));
+    assert_eq!(r.json()["timestamped"], true);
+}
+
+/// n6: leading and trailing whitespace is trimmed from the secret file, as PHP trims CRAFT_SEAL_SECRET.
+#[test]
+fn the_secret_is_trimmed_at_both_ends() {
+    let dir = workdir("secret-trim");
+    secrets(&dir, "test");
+    std::fs::write(dir.join("seal_hmac"), format!(" \t{SECRET}\r\n")).expect("secret");
+    #[cfg(unix)]
+    chmod(&dir.join("seal_hmac"), 0o600);
+    assert_eq!(start_in(&dir, &[]).get("/v1/health").status, 200, "the MAC of the trimmed secret");
+}
+
+/// P5 review m12: a Content-Length with a sign is malformed; one too long for memory is too large.
+#[test]
+fn content_length_digits() {
+    let w = start("content-length", &[]);
+    let head = |len: &str| format!("POST /v1/inspect HTTP/1.1\r\nHost: seal\r\nContent-Length: {len}\r\n\r\n");
+    for bad in ["+5", "-5", "5 5", "0x5", " "] {
+        let r = w.raw(head(bad).as_bytes());
+        assert_eq!(r.status, 400, "{bad:?}");
+        assert_eq!(r.json()["error"], "bad_request");
+    }
+    let r = w.raw(head(&"9".repeat(25)).as_bytes());
+    assert_eq!(r.status, 413, "25 digits");
+    assert_eq!(r.json()["error"], "too_large");
+}
+
+/// P5 review m6: a client that sends `Expect: 100-continue` (Guzzle over 1 MB) gets `100 Continue`
+/// at once, before it sends the body, and then its answer.
+#[test]
+fn expect_100_continue_is_answered() {
+    let w = start("expect", &[]);
+    let body = serde_json::to_vec(&json!({ "pdf": b64(&blank()) })).expect("json");
+    let (time, n) = (now(), nonce());
+    let mac = hmac(&format!("POST\n/v1/inspect\n{}\n{time}\n{n}", sha(&body)));
+    let head = format!(
+        "POST /v1/inspect HTTP/1.1\r\nHost: seal\r\nX-Craft-Seal-Time: {time}\r\nX-Craft-Seal-Nonce: {n}\r\nX-Craft-Seal-Mac: {mac}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n",
+        body.len()
+    );
+    let mut s = TcpStream::connect(("127.0.0.1", w.port)).expect("connects");
+    s.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+    s.write_all(head.as_bytes()).expect("sends the head");
+    let started = Instant::now();
+    let want = b"HTTP/1.1 100 Continue\r\n\r\n";
+    let mut got = vec![0u8; want.len()];
+    s.read_exact(&mut got).expect("100 Continue before the body");
+    assert_eq!(&got[..], &want[..]);
+    assert!(started.elapsed() < Duration::from_secs(2));
+    s.write_all(&body).expect("sends the body");
+    let mut out = Vec::new();
+    s.read_to_end(&mut out).expect("reads");
+    assert!(out.starts_with(b"HTTP/1.1 200 "), "{}", String::from_utf8_lossy(&out[..out.len().min(200)]));
 }
 
 #[test]
@@ -468,16 +594,30 @@ fn a_short_secret_refuses_to_start() {
     std::fs::write(dir.join("seal_hmac"), "x".repeat(31)).expect("secret");
     #[cfg(unix)]
     chmod(&dir.join("seal_hmac"), 0o600);
-    assert!(refused_start(&dir, "a 31-byte secret").contains("shorter than"));
+    let err = refused_start(&dir, "a 31-byte secret");
+    assert!(err.contains("shorter than"));
+    // n6: sign-setup does not make the secret; it reads CRAFT_SEAL_SECRET.
+    assert!(err.contains("same value as CRAFT_SEAL_SECRET"), "{err}");
+    assert!(!err.contains("sign-setup made"), "{err}");
 }
 
 #[test]
 fn seal_calls_past_the_rate_limit_are_429() {
     let w = start("ratelimit", &[]);
-    // Malformed seal calls are cheap, and the limit counts every authenticated seal call.
-    let statuses: Vec<u16> = (0..31).map(|_| w.post("/v1/seal", &json!({})).status).collect();
-    assert!(statuses[..30].iter().all(|s| *s == 400), "{statuses:?}");
-    assert_eq!(statuses[30], 429, "one past the limit");
+    // Malformed seal calls are cheap, and the limit counts every authenticated seal call. On a busy
+    // machine the 10 s window can slide while the calls are made; then the first 429 comes later,
+    // never earlier (N9: robust under load).
+    let started = Instant::now();
+    let mut statuses = Vec::new();
+    while statuses.len() < 200 && statuses.last() != Some(&429) {
+        statuses.push(w.post("/v1/seal", &json!({})).status);
+    }
+    let first = statuses.iter().position(|s| *s == 429).expect("a 429 comes");
+    assert!(statuses[..first].iter().all(|s| *s == 400), "{statuses:?}");
+    assert!(first >= 30, "never before the 31st call: {statuses:?}");
+    if started.elapsed() < Duration::from_secs(9) {
+        assert_eq!(first, 30, "one past the limit, when the calls fit in the window");
+    }
     assert_eq!(w.get("/v1/health").status, 200, "other calls are not limited");
 }
 

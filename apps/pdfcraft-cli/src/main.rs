@@ -96,7 +96,7 @@ pdfcraft-cli run    --script steps.json [--root DIR] [--report]
 pdfcraft-cli ui     --control FILE <method> [key=value …] [--out shot.png]
                                                            drive a running app started with --control FILE
 pdfcraft-cli seal-worker --listen 0.0.0.0:9560 --key-file seal.p12 --key-password-file PW_FILE --secret-file HMAC_FILE
-                      [--instance NAME] [--organisation NAME] [--insecure-dev] [--insecure-dev-tsa] [--port-file PATH]
+                      [--allow-readable-secrets] [--allow-http-tsa] [--insecure-dev-tsa] [--port-file PATH]
                                                            e-sign sealing service (HTTP, HMAC-authenticated); see seal_worker.rs
 help and feedback: https://discord.gg/artcraft"
 );

@@ -19,7 +19,7 @@ pub const MAX_REPLY: u64 = 64 * 1024;
 const MAX_URL: usize = 2048;
 
 /// Whether `url` may be given to [`HttpTsa`]: `https://` with a host and no user name or
-/// password, or `http://` too when `allow_http` (`--insecure-dev`).
+/// password, or `http://` too when `allow_http` (`--allow-http-tsa`).
 pub fn url_allowed(url: &str, allow_http: bool) -> bool {
     if url.len() > MAX_URL || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return false;

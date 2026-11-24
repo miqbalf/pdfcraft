@@ -45,10 +45,6 @@ const MIN_SECRET: usize = 32;
 /// stack overflow aborts the whole worker where a panic does not.
 const CONNECTION_STACK: usize = 8 << 20;
 
-/// The instance and organisation the final seal's reason names when the request does not.
-const DEFAULT_INSTANCE: &str = "workspace.treeo.id";
-const DEFAULT_ORGANISATION: &str = "PT Solusi Hutan Digital";
-
 /// The loaded sealing identity and what health reports about it.
 pub(crate) struct Key {
     pub id: DigitalId,
@@ -63,9 +59,8 @@ pub(crate) struct Worker {
     secret: Zeroizing<Vec<u8>>,
     pub key: Option<Key>,
     pub dev_tsa: Option<tsa::DevTsa>,
-    pub insecure_dev: bool,
-    pub instance: String,
-    pub organisation: String,
+    /// `--allow-http-tsa`: http:// timestamp services are taken (development only).
+    pub allow_http_tsa: bool,
     nonces: Mutex<auth::NonceCache>,
     seals: Mutex<auth::RateLimit>,
 }
@@ -82,17 +77,15 @@ struct Options {
     key_file: PathBuf,
     key_password_file: PathBuf,
     secret_file: PathBuf,
-    insecure_dev: bool,
+    allow_readable_secrets: bool,
+    allow_http_tsa: bool,
     insecure_dev_tsa: bool,
     port_file: Option<PathBuf>,
-    instance: String,
-    organisation: String,
 }
 
 fn options(args: &[String]) -> Result<Options, CliError> {
     let (mut listen, mut key_file, mut key_password_file, mut secret_file, mut port_file) = (None, None, None, None, None);
-    let (mut instance, mut organisation) = (DEFAULT_INSTANCE.to_string(), DEFAULT_ORGANISATION.to_string());
-    let (mut insecure_dev, mut insecure_dev_tsa) = (false, false);
+    let (mut allow_readable_secrets, mut allow_http_tsa, mut insecure_dev_tsa) = (false, false, false);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().cloned().ok_or_else(|| CliError::from(format!("seal-worker: {a} needs a value")));
@@ -102,9 +95,11 @@ fn options(args: &[String]) -> Result<Options, CliError> {
             "--key-password-file" => key_password_file = Some(PathBuf::from(value()?)),
             "--secret-file" => secret_file = Some(PathBuf::from(value()?)),
             "--port-file" => port_file = Some(PathBuf::from(value()?)),
-            "--instance" => instance = value()?,
-            "--organisation" => organisation = value()?,
-            "--insecure-dev" => insecure_dev = true,
+            // Two development switches, one job each (N9): secret files group or others can read,
+            // and http:// timestamp services. The instance and organisation come with each final
+            // seal (ruling I1); the worker has none of its own.
+            "--allow-readable-secrets" => allow_readable_secrets = true,
+            "--allow-http-tsa" => allow_http_tsa = true,
             "--insecure-dev-tsa" => insecure_dev_tsa = true,
             other => return Err(format!("seal-worker: unknown option '{other}'; see pdfcraft-cli --help").into()),
         }
@@ -115,11 +110,10 @@ fn options(args: &[String]) -> Result<Options, CliError> {
         key_file: need(key_file, "--key-file")?,
         key_password_file: need(key_password_file, "--key-password-file")?,
         secret_file: need(secret_file, "--secret-file")?,
-        insecure_dev,
+        allow_readable_secrets,
+        allow_http_tsa,
         insecure_dev_tsa,
         port_file,
-        instance,
-        organisation,
     })
 }
 
@@ -127,14 +121,14 @@ pub(crate) fn log(line: std::fmt::Arguments<'_>) {
     let _ = writeln!(std::io::stderr().lock(), "seal-worker: {line}");
 }
 
-/// Refuse a secret file that group or others may read or change, unless `insecure_dev`.
+/// Refuse a secret file that group or others may read or change, unless `allow_readable`.
 #[cfg(unix)]
-fn private(path: &Path, insecure_dev: bool) -> Result<(), CliError> {
+fn private(path: &Path, allow_readable: bool) -> Result<(), CliError> {
     use std::os::unix::fs::PermissionsExt;
     let Ok(meta) = std::fs::metadata(path) else { return Ok(()) };
-    if meta.permissions().mode() & 0o066 != 0 && !insecure_dev {
+    if meta.permissions().mode() & 0o066 != 0 && !allow_readable {
         return Err(format!(
-            "seal-worker: {} can be read or changed by group or others; make it this user's only (chmod 600), or pass --insecure-dev",
+            "seal-worker: {} can be read or changed by group or others; make it this user's only (chmod 400 or 600), or pass --allow-readable-secrets",
             path.display()
         )
         .into());
@@ -143,13 +137,26 @@ fn private(path: &Path, insecure_dev: bool) -> Result<(), CliError> {
 }
 
 #[cfg(not(unix))]
-fn private(_path: &Path, _insecure_dev: bool) -> Result<(), CliError> {
+fn private(_path: &Path, _allow_readable: bool) -> Result<(), CliError> {
     Ok(())
 }
 
 /// Lowercase hex SHA-256 of a certificate's DER.
 fn cert_sha256(c: &Certificate) -> String {
     auth::sha256_hex(&c.raw)
+}
+
+/// The secret file's bytes without the whitespace PHP's `trim()` removes from CRAFT_SEAL_SECRET
+/// (space, tab, line breaks, NUL, vertical tab), at both ends, so both sides MAC with the same key (n6).
+fn trim_secret(secret: &mut Zeroizing<Vec<u8>>) {
+    let blank = |b: &u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r' | b'\0' | 0x0b);
+    while secret.last().is_some_and(blank) {
+        secret.pop();
+    }
+    let lead = secret.iter().take_while(|b| blank(b)).count();
+    if lead > 0 {
+        secret.drain(..lead);
+    }
 }
 
 /// Open the PKCS #12 file with the password file's contents (one trailing line break dropped);
@@ -172,7 +179,8 @@ fn load_key(key_file: &Path, password_file: &Path) -> Result<Key, &'static str> 
         _ => "the key file is not a PKCS #12 file this worker can use",
     })?;
     let chain: Vec<Certificate> = pdfcraft_sign::x509::build_chain(&id.certificate, &id.chain, None).into_iter().cloned().collect();
-    let root = chain.last().cloned().unwrap_or_else(|| id.certificate.clone());
+    // The same anchor the engine checks a seal against (P5 review m8).
+    let root = pdfcraft_engine::esign::trust_root(&id);
     Ok(Key {
         root_pem: pdfcraft_sign::x509::to_pem(&root),
         chain_pem: chain.iter().map(pdfcraft_sign::x509::to_pem).collect(),
@@ -192,14 +200,15 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
         log(format_args!("a call failed inside the worker (panic at {at}); its message is not logged"));
     }));
     for path in [&o.secret_file, &o.key_file, &o.key_password_file] {
-        private(path, o.insecure_dev)?;
+        private(path, o.allow_readable_secrets)?;
     }
     let mut secret = Zeroizing::new(std::fs::read(&o.secret_file).map_err(|_| CliError::from("seal-worker: the secret file cannot be read"))?);
-    while secret.last().is_some_and(u8::is_ascii_whitespace) {
-        secret.pop();
-    }
+    trim_secret(&mut secret);
     if secret.len() < MIN_SECRET {
-        return Err(format!("seal-worker: the secret is shorter than {MIN_SECRET} bytes; use the one occ craft_office:sign-setup made").into());
+        return Err(format!(
+            "seal-worker: the secret is shorter than {MIN_SECRET} bytes; use the same value as CRAFT_SEAL_SECRET (at least {MIN_SECRET} bytes)"
+        )
+        .into());
     }
     let key = match load_key(&o.key_file, &o.key_password_file) {
         Ok(k) => {
@@ -217,8 +226,11 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
     } else {
         None
     };
-    if o.insecure_dev {
-        log(format_args!("INSECURE: --insecure-dev: readable secret files and http:// timestamp services are allowed"));
+    if o.allow_readable_secrets {
+        log(format_args!("INSECURE: --allow-readable-secrets: secret files group or others can read are taken"));
+    }
+    if o.allow_http_tsa {
+        log(format_args!("INSECURE: --allow-http-tsa: http:// timestamp services are taken"));
     }
     let listener = TcpListener::bind(&o.listen).map_err(|e| CliError::from(format!("seal-worker: cannot listen on {}: {e}", o.listen)))?;
     let addr = listener.local_addr().map_err(|e| CliError::from(format!("seal-worker: {e}")))?;
@@ -234,9 +246,7 @@ pub fn run(args: &[String]) -> Result<(), CliError> {
         secret,
         key,
         dev_tsa,
-        insecure_dev: o.insecure_dev,
-        instance: o.instance,
-        organisation: o.organisation,
+        allow_http_tsa: o.allow_http_tsa,
         nonces: Mutex::new(auth::NonceCache::default()),
         seals: Mutex::new(auth::RateLimit::new(MAX_SEALS, SEAL_WINDOW)),
     });
@@ -371,6 +381,14 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, (ReadError, Option<St
     let path = req.path.unwrap_or_default().split('?').next().unwrap_or_default().to_string();
     let mut body = Vec::with_capacity(length.min(1024 * 1024));
     body.extend_from_slice(head.get(end..).unwrap_or_default());
+    // A client that waits for it (Guzzle and curl over 1 MB) gets `100 Continue` once the length is
+    // known to be acceptable, instead of waiting a second for nothing (P5 review m6).
+    if body.len() < length && header("expect").iter().any(|v| v.eq_ignore_ascii_case("100-continue")) {
+        let _ = stream.set_write_timeout(Some(READ_TIMEOUT));
+        if stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").and_then(|()| stream.flush()).is_err() {
+            return Err((ReadError::Drop, mac.clone()));
+        }
+    }
     while body.len() < length {
         let n = read_some(stream, &mut chunk, deadline).map_err(|e| (e, mac.clone()))?;
         body.extend_from_slice(chunk.get(..n).unwrap_or_default());

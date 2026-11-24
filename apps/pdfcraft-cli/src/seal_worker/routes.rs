@@ -75,9 +75,9 @@ fn position(o: &Map<String, Value>) -> Field<u32> {
     uint(o, "position").and_then(|n| u32::try_from(n).map_err(|_| bad_json("The field \"position\" is too large.")))
 }
 
-/// The PDF in `o["pdf"]`.
+/// The PDF in `o["pdf"]`, decoded from the parsed body in place (no copy of the base64 text; P5 review m4).
 fn pdf(o: &Map<String, Value>) -> Field<Vec<u8>> {
-    let text = string(o, "pdf")?;
+    let text = o.get("pdf").and_then(Value::as_str).ok_or_else(|| bad_json("The field \"pdf\" is missing or not text."))?;
     // Base64 of the cap, rounded up: anything longer cannot decode to an allowed PDF.
     if text.len() > MAX_PDF_BYTES.div_ceil(3) * 4 {
         return Err(refusal(413, "too_large", "This PDF is larger than 64 MiB and cannot be signed."));
@@ -266,8 +266,8 @@ struct SealCall {
 struct FinalCall {
     completed_text: String,
     date: String,
-    instance: Option<String>,
-    organisation: Option<String>,
+    instance: String,
+    organisation: String,
 }
 
 fn seal_call(o: &Map<String, Value>) -> Field<SealCall> {
@@ -282,12 +282,19 @@ fn seal_call(o: &Map<String, Value>) -> Field<SealCall> {
         None | Some(Value::Null) => None,
         Some(v) => {
             let f = object(v, "The field \"final\"")?;
-            let optional = |k: &str| f.get(k).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+            // Ruling I1: the host names them with every final seal; the worker has no names of its own.
+            let named = |k: &str| {
+                f.get(k)
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string)
+                    .ok_or_else(|| bad_json(&format!("The field \"final.{k}\" is missing or empty.")))
+            };
             Some(FinalCall {
                 completed_text: string(&f, "completed_text")?,
                 date: string(&f, "date")?,
-                instance: optional("instance"),
-                organisation: optional("organisation"),
+                instance: named("instance")?,
+                organisation: named("organisation")?,
             })
         }
     };
@@ -333,14 +340,15 @@ fn seal_with(worker: &Worker, key: &Key, call: &SealCall) -> Reply {
     let http;
     let authority: Option<&dyn pdfcraft_sign::TimestampAuthority> = match (&call.tsa_url, &worker.dev_tsa) {
         (None, _) => None,
-        (Some(url), _) if !tsa::url_allowed(url, worker.insecure_dev) => {
+        // The in-process test authority answers whatever address is set (the e2e stack's is http://).
+        (Some(_), Some(dev)) => Some(dev),
+        (Some(url), None) if !tsa::url_allowed(url, worker.allow_http_tsa) => {
             return refusal(
                 400,
                 "bad_tsa_url",
                 "The timestamp service address must be an https:// URL with a host (http:// only on a development worker).",
             );
         }
-        (Some(_), Some(dev)) => Some(dev),
         (Some(url), None) => {
             http = HttpTsa::new(url, tsa::TIMEOUT);
             Some(&http)
@@ -355,14 +363,11 @@ fn seal_with(worker: &Worker, key: &Key, call: &SealCall) -> Reply {
         row_text: &call.row_text,
         date: &call.date,
     };
-    if call.final_seal.as_ref().is_some_and(|f| f.instance.is_none() || f.organisation.is_none()) {
-        super::log(format_args!("request {}: final seal without instance or organisation; the worker's own names are used", call.request_id));
-    }
     let fin = call.final_seal.as_ref().map(|f| FinalSeal {
         completed_text: &f.completed_text,
         date: &f.date,
-        instance: f.instance.as_deref().unwrap_or(&worker.instance),
-        organisation: f.organisation.as_deref().unwrap_or(&worker.organisation),
+        instance: &f.instance,
+        organisation: &f.organisation,
     });
     match esign::seal(&call.pdf, &key.id, &signer, fin.as_ref(), authority) {
         Ok(s) => {

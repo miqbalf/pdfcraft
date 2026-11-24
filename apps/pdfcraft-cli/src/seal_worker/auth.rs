@@ -15,8 +15,9 @@ type HmacSha256 = Hmac<Sha256>;
 
 /// A request's time may differ from the worker's clock by at most this many seconds.
 pub const MAX_SKEW_SECS: i64 = 60;
-/// A nonce is refused when it was seen this recently.
-pub const NONCE_WINDOW: Duration = Duration::from_secs(120);
+/// A nonce is refused when it was seen this recently: longer than any one request time can be
+/// accepted (2 × [`MAX_SKEW_SECS`], plus a second for the clock floored to the second; P5 review m1).
+pub const NONCE_WINDOW: Duration = Duration::from_secs(2 * MAX_SKEW_SECS as u64 + 2);
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
@@ -167,6 +168,24 @@ mod tests {
         assert!(verify(SECRET, &h, 1_700_000_060, &mut cache, now), "within the skew");
         assert!(!verify(SECRET, &h, 1_700_000_000, &mut cache, now), "the nonce again");
         assert!(cache.insert(NONCE, now + NONCE_WINDOW), "forgotten after the window");
+    }
+
+    /// P5 review m1: a request up to MAX_SKEW_SECS ahead of the worker's clock is accepted for about
+    /// 2 × MAX_SKEW_SECS + 1 s of real time (the clock is floored to the second), so its nonce is kept
+    /// at least that long.
+    #[test]
+    fn a_nonce_is_kept_while_its_time_can_still_be_accepted() {
+        let now = Instant::now();
+        let ahead = 1_700_000_060; // the request's time: 60 s ahead of the worker
+        let mac = request_mac(SECRET, "GET", "/v1/health", b"", "1700000060", NONCE);
+        let h = Presented { method: "GET", path: "/v1/health", body: b"", time: Some("1700000060"), nonce: Some(NONCE), mac: Some(&mac) };
+        let mut cache = NonceCache::default();
+        // First accepted at real time 1_700_000_000.9 (floored to ..000), replayed at real time ..060.9
+        // (floored to ..060, still within the skew): 120.x s later.
+        assert!(verify(SECRET, &h, ahead - 60, &mut cache, now));
+        let later = now + Duration::from_millis(121_900);
+        assert!(!verify(SECRET, &h, ahead + 60, &mut cache, later), "replayed at the far edge of the skew");
+        assert!(NONCE_WINDOW.as_secs() as i64 > 2 * MAX_SKEW_SECS + 1);
     }
 
     #[test]

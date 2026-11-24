@@ -5,7 +5,7 @@ use std::sync::Arc;
 use pdfcraft_cos::{PdfString, SaveOptions, write_incremental};
 use pdfcraft_engine::esign::{
     AuditHeader, EsignError, FinalSeal, Placement, SignerSeal, SignerSlot, completed_field, graphic_from_json, inspect, inspect_trusting, prepare,
-    row_field, seal, seal_field, signer_field,
+    row_field, seal, seal_field, signer_field, trust_root,
 };
 use pdfcraft_engine::sign::der;
 use pdfcraft_engine::sign::timestamp::{TimestampIssuance, TimestampSigner, parse_request, respond};
@@ -440,12 +440,30 @@ fn a_bad_date_is_refused() {
 
 /// With the seal's root trusted, as the worker does (P4 review concern 1), `inspect` agrees with
 /// the seal: the request's signatures read valid, not unknown.
+/// P5 review m8: one way to pick the anchor, whatever order the PKCS #12 file lists its chain in.
+#[test]
+fn trust_root_is_the_top_of_the_built_chain_in_any_order() {
+    let id = id();
+    let root = trust_root(&id);
+    assert!(id.chain.iter().any(|c| c.raw == root.raw), "the anchor is one of the file's certificates");
+    assert_ne!(root.raw, id.certificate.raw);
+    // A file that also lists an unrelated or repeated certificate last: the anchor stays the issuer's root.
+    let mut other = self::id();
+    other.chain.push(other.certificate.clone());
+    assert_eq!(trust_root(&other).raw, root.raw, "not simply the last certificate listed");
+    other.chain.reverse();
+    assert_eq!(trust_root(&other).raw, root.raw, "in any order");
+    let mut bare = self::id();
+    bare.chain.clear();
+    assert_eq!(trust_root(&bare).raw, bare.certificate.raw, "no chain: the certificate itself");
+}
+
 #[test]
 fn inspect_trusting_the_seal_root_agrees_with_the_seal() {
     let steps = all_three(None);
     let last = &steps[2].1;
     let id = id();
-    let root = id.chain.last().cloned().unwrap_or_else(|| id.certificate.clone());
+    let root = trust_root(&id);
     let report = inspect_trusting(&last.bytes, &[root]).expect("inspects");
     assert_eq!(report.signatures, last.signatures, "the same verdicts as the seal's own check");
     assert!(report.signatures.iter().filter(|s| s.signed).all(|s| s.status == "valid"), "{:?}", report.signatures);
@@ -464,7 +482,8 @@ fn prepared_with_own_signature_field(with_look: bool) -> Vec<u8> {
         // field with a normal appearance (P5 review m9).
         use pdfcraft_cos::{Lexer, Object, Stream};
         let mut cos = pdfcraft_cos::Document::open(Arc::new(source.clone())).expect("reopens");
-        let widget = pdfcraft_forms::fields(&cos).into_iter().find(|f| f.name == "Witness").expect("Witness").obj;
+        let field = pdfcraft_forms::fields(&cos).into_iter().find(|f| f.name == "Witness").expect("Witness");
+        let widget = field.widgets.first().expect("Witness has a widget").obj;
         let bbox = Lexer::new(b"<< /Type /XObject /Subtype /Form /BBox [0 0 180 50] >>", 0).object().expect("dict");
         let look = cos.add(Object::Stream(Stream::from_raw(
             bbox.as_dict().expect("dict").clone(),
@@ -475,6 +494,11 @@ fn prepared_with_own_signature_field(with_look: bool) -> Vec<u8> {
         let out = write_incremental(&cos, &SaveOptions { object_streams: false, ..SaveOptions::default() }).expect("writes");
         assert!(out.starts_with(&source));
         source = out.to_vec();
+        // The look is on the widget the forms layer reads (P5 nit), not only on a field dictionary.
+        let check = pdfcraft_cos::Document::open(Arc::new(source.clone())).expect("reopens");
+        let w = pdfcraft_forms::fields(&check).into_iter().find(|f| f.name == "Witness").and_then(|f| f.widgets.first().map(|w| w.obj));
+        let w = w.expect("the widget");
+        assert!(check.get(w).as_dict().and_then(|d| d.get(b"AP")).is_some(), "the widget carries /AP");
     }
     let slots: Vec<SignerSlot> = SIGNERS
         .iter()
