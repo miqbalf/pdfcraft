@@ -344,6 +344,18 @@ fn prepare_refuses_usage_rights_certified_and_xfa_documents() {
 }
 
 #[test]
+fn prepare_accepts_100_signers_and_refuses_101() {
+    // The owner's cap (2026-11-24): sealing time grows about N^2.2 with the number of signatures.
+    // craft_office's SignRequestService::MAX_SIGNERS must refuse at the same boundary.
+    let many = |n: u32| (1..=n).map(|p| slot(p, "u", "U", None)).collect::<Vec<_>>();
+    let at_cap = prepare(&blank(1), &header(), &many(100), DATE).expect("100 signers are accepted");
+    assert_eq!(at_cap.fields.len(), 100);
+    let err = prepare(&blank(1), &header(), &many(101), DATE).expect_err("101 signers are refused");
+    assert!(matches!(err, EsignError::Validation(_)), "{err:?}");
+    assert!(err.to_string().contains("100"), "{err}");
+}
+
+#[test]
 fn prepare_caps_the_signers() {
     let many = |n: u32| (1..=n).map(|p| slot(p, "u", "U", None)).collect::<Vec<_>>();
     let at_cap = prepare(&blank(1), &header(), &many(MAX_SIGNERS as u32), DATE).expect("exactly the cap is accepted");

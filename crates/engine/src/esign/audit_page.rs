@@ -31,8 +31,9 @@ const FOOTER: f64 = 108.0;
 const MAX_LINE: usize = 300;
 /// At most this many events in a printed trail.
 const MAX_EVENTS: usize = 5_000;
-/// At most this many signers, and as many signatures, in a printed trail: a request's own cap.
-const MAX_LIST: usize = super::prepare::MAX_SIGNERS;
+/// At most this many signers, and as many signatures, in a printed trail. Kept apart from
+/// `MAX_SIGNERS`: a completed request has one signature more than signers (the final seal).
+const MAX_LIST: usize = 500;
 /// At most this many keys in the trail and in any one of its objects.
 const MAX_KEYS: usize = 64;
 /// The keys of an event that follow its head, before anything else, so a cut never hides them.

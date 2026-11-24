@@ -93,8 +93,10 @@ fn refusal(e: EditError) -> EsignError {
     }
 }
 
-/// The most signers one request may have (the audit page's own cap).
-pub const MAX_SIGNERS: usize = 500;
+/// The most signers one request may have. Owner ruling 2026-11-24: sealing time grows about N^2.2
+/// with the number of signatures, and 100 keeps the final seal well inside craft_office's 180 s
+/// timeout. craft_office's `SignRequestService::MAX_SIGNERS` refuses at the same boundary.
+pub const MAX_SIGNERS: usize = 100;
 
 /// Why `cos` must not get a signature request although no field of it is signed: its catalog
 /// names a signature elsewhere (usage rights, `/Perms /UR3`; a certification, `/Perms /DocMDP`),
