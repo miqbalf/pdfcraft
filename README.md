@@ -71,6 +71,14 @@
 
 ---
 
+## Fork notes
+
+This fork adds, on top of upstream PdfCraft:
+
+- Hosting inside a web page of a self-hosted file server: the page opens and saves the document, and Share asks the page to share the file.
+
+The server app that hosts these builds is not part of this repository.
+
 ## Community
 
 PdfCraft is part of [ArtCraft](https://getartcraft.com). Come say hello, get help and follow development:
