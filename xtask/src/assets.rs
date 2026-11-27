@@ -37,10 +37,10 @@ pub const ALLOWED_LICENCES: &[&str] = &[
 ];
 
 /// The closed list of Adobe-authored, non-visual technical data (clean-room.md): (crate, path).
-/// Storyteller's own brand marks (the ArtCraft name and logos): shipped in the app and docs, but
+/// The owner's own brand marks (the udinCraft name and logos): shipped in the app and docs, but
 /// not licensed for reuse by forks. Allowed only for `kind = "logo"` entries under `docs/brand/`
 /// (licences.md).
-pub const BRAND_LICENCE: &str = "LicenseRef-Storyteller-Trademark";
+pub const BRAND_LICENCE: &str = "LicenseRef-udinCraft-Trademark";
 
 pub const ADOBE_DATA_ALLOWED: &[(&str, &str)] = &[("hayro-cmap", "assets/cmaps.brotli"), ("hayro-interpret", "src/font/generated/metrics.rs")];
 
@@ -568,11 +568,11 @@ mod tests {
     fn brand_licence_only_for_brand_logos() {
         let root = super::root();
         for (path, kind, pass) in [
-            ("docs/brand/artcraft-mark.svg", "logo", true),
-            ("docs/brand/artcraft-mark.svg", "icon", false),
+            ("docs/brand/udincraft-mark.svg", "logo", true),
+            ("docs/brand/udincraft-mark.svg", "icon", false),
             ("assets/icons/mark.svg", "logo", false),
         ] {
-            let mut a = asset(path, "Storyteller", kind, BRAND_LICENCE);
+            let mut a = asset(path, "miqbalf", kind, BRAND_LICENCE);
             a.licence_file = "docs/brand/LICENSE-brand.txt".into();
             let m = Manifest { asset: vec![a], ..Default::default() };
             let p = check(&root, &m, &[], &BTreeSet::new());

@@ -189,5 +189,5 @@ to 16 and directory entries to 32,768. Cyclic includes are skipped.
   names Adobe as author, except a font under OFL-1.1 alone. The Adobe non-visual data allowed is the
   closed list in `xtask/src/assets.rs` (`adobe_data = true`). `cargo xtask demo-pdf` fails if the PDF
   embeds a font that is not an `ATTRIBUTION.toml` entry.
-- The ArtCraft name, wordmark and logos in `docs/brand/` are trademarks of the ArtCraft Team, not open
-  source (terms in `docs/brand/LICENSE-brand.txt`); they stay in PdfCraft, unmodified.
+- The udinCraft name, wordmark and logos in `docs/brand/` are the owner's (miqbalf) marks, not open
+  source (terms in `docs/brand/LICENSE-brand.txt`); forks and modified versions must replace them.

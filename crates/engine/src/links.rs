@@ -1,15 +1,19 @@
-//! Where PdfCraft and the ArtCraft community live on the web. One table, so the Help menu, the
-//! About dialog, the home screen, the CLI and the README agree.
+//! Where this udinCraft build of PdfCraft, and the upstream ArtCraft project it is based on, live
+//! on the web. One table, so the Help menu, the About dialog, the home screen, the CLI and the
+//! README agree.
 
 use icu_properties::props::Script;
 use std::path::{Path, PathBuf};
 
-/// The app's name in ArtCraft URLs (`getartcraft.com/apps/{APP}`, `github.com/storytold/{APP}`).
+/// The app's name in its URLs (`github.com/miqbalf/{APP}`, upstream `github.com/storytold/{APP}`).
 pub const APP: &str = "pdfcraft";
 
+/// The upstream ArtCraft community and website (credited, not ours).
 pub const DISCORD: &str = "https://discord.gg/artcraft";
 pub const WEBSITE: &str = "https://getartcraft.com";
-pub const APP_PAGE: &str = "https://getartcraft.com/apps/pdfcraft";
+/// This udinCraft build's own page: the fork on GitHub.
+pub const APP_PAGE: &str = "https://github.com/miqbalf/pdfcraft";
+/// Upstream PdfCraft by the ArtCraft team, which this build is based on.
 pub const GITHUB: &str = "https://github.com/storytold/pdfcraft";
 
 /// A link and the registry command that opens it.
@@ -22,11 +26,11 @@ pub struct Link {
     pub icon: &'static str,
 }
 
-/// In the order they are shown. Discord comes first: it is where people get help fastest.
+/// In the order they are shown. The upstream Discord comes first, as upstream ordered it.
 pub const LINKS: &[Link] = &[
     Link { command: "help.discord", label: "Join the ArtCraft Discord", url: DISCORD, icon: "messages-square" },
     Link { command: "help.app_page", label: "PdfCraft web page", url: APP_PAGE, icon: "globe" },
-    Link { command: "help.github", label: "PdfCraft on GitHub", url: GITHUB, icon: "code-xml" },
+    Link { command: "help.github", label: "Based on PdfCraft by the ArtCraft team", url: GITHUB, icon: "code-xml" },
     Link { command: "help.website", label: "ArtCraft website", url: WEBSITE, icon: "external-link" },
 ];
 

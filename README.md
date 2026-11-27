@@ -1,8 +1,8 @@
 <p align="center">
-  <a href="https://getartcraft.com/">
+  <a href="https://github.com/miqbalf/pdfcraft">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/artcraft-logo-white.svg">
-      <img alt="ArtCraft" src="docs/brand/artcraft-logo.svg" width="200">
+      <source media="(prefers-color-scheme: dark)" srcset="docs/brand/udincraft-logo-white.svg">
+      <img alt="udinCraft" src="docs/brand/udincraft-logo.svg" width="200">
     </picture>
   </a>
 </p>
@@ -31,13 +31,12 @@
 </p>
 
 <p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
+  <a href="https://github.com/miqbalf/pdfcraft"><b>udinCraft PdfCraft on GitHub</b></a> ·
+  <a href="https://github.com/storytold/pdfcraft">Based on PdfCraft by the ArtCraft team</a>
 </p>
 
 <p align="center">
-  <a href="https://getartcraft.com/apps/pdfcraft"><b>PdfCraft on getartcraft.com</b></a> ·
-  <a href="https://getartcraft.com/">ArtCraft</a> ·
-  <a href="https://getartcraft.com/apps">All Crafting Apps</a>
+  <i>A udinCraft build. Based on PdfCraft by the ArtCraft team.</i>
 </p>
 
 <br>
@@ -47,10 +46,6 @@
   <br>
   <sub>The PdfCraft Showcase, a 13-page specimen PDF, open with the All tools panel and threaded comments.</sub>
 </p>
-
-> [!NOTE]
-> **ArtCraft is a community of artists from all walks of life.** Digital, generative, music,
-> games &mdash; if you make things, you're one of us. **[Come say hi on Discord](https://discord.gg/artcraft).**
 
 <p align="center">
   <a href="#highlights">Highlights</a> ·
@@ -81,13 +76,14 @@ The server app that hosts these builds is not part of this repository.
 
 ## Community
 
-PdfCraft is part of [ArtCraft](https://getartcraft.com). Come say hello, get help and follow development:
+This is the udinCraft build of PdfCraft. Its source and issues are at
+[github.com/miqbalf/pdfcraft](https://github.com/miqbalf/pdfcraft).
 
-- **Discord: [discord.gg/artcraft](https://discord.gg/artcraft)**. This is the fastest way to get help and share feedback. The app has a Discord button in its title bar.
-- **Web page:** [getartcraft.com/apps/pdfcraft](https://getartcraft.com/apps/pdfcraft)
-- **Source:** [github.com/storytold/pdfcraft](https://github.com/storytold/pdfcraft)
+It is based on PdfCraft by the ArtCraft team ([github.com/storytold/pdfcraft](https://github.com/storytold/pdfcraft)).
+The upstream project has its own community on [Discord](https://discord.gg/artcraft) and
+[getartcraft.com](https://getartcraft.com/apps/pdfcraft); please report problems with this build here, not there.
 
-The ArtCraft name and logos in `docs/brand/` are trademarks of the ArtCraft Team and are not open source. They may be used only unmodified, and only as part of PdfCraft (see `docs/brand/LICENSE-brand.txt`). Forks and modified versions must remove them.
+The udinCraft name and marks in `docs/brand/` belong to miqbalf and are not open source (see `docs/brand/LICENSE-brand.txt`). Forks and modified versions must replace them with their own.
 
 ## Highlights
 
@@ -463,7 +459,7 @@ The summary is in **[ROADMAP.md](ROADMAP.md)**; the full assessment by dimension
 
 ## Downloads
 
-**New to PdfCraft?** Download it from the [PdfCraft page on getartcraft.com](https://getartcraft.com/apps/pdfcraft). That's the easiest way to install it.
+**New to PdfCraft?** The upstream builds by the ArtCraft team are on the [PdfCraft page on getartcraft.com](https://getartcraft.com/apps/pdfcraft). Those are ArtCraft's builds, not udinCraft's.
 
 **Want a specific build or format?** On GitHub, the [latest release](https://github.com/storytold/pdfcraft/releases/latest) has every build listed below, and [all releases](https://github.com/storytold/pdfcraft/releases) has earlier versions and their notes. `<ver>` in the file names is the version number, and `SHA256SUMS.txt` lists a checksum for every file.
 
@@ -566,7 +562,7 @@ Every other Linux build needs glibc 2.35 or newer (Ubuntu 22.04+, Debian 12+, Fe
 
 ## The Crafting Apps
 
-PdfCraft is one of the **Crafting Apps**: free, open-source creative tools from the
+Upstream PdfCraft is one of the **Crafting Apps**: free, open-source creative tools from the
 [ArtCraft](https://getartcraft.com/) team, each written from scratch in Rust and each able to
 stand on its own.
 
@@ -589,50 +585,30 @@ stand on its own.
 | <img src="https://raw.githubusercontent.com/storytold/craft-anything/main/assets/app-icon/hicolor/64x64/apps/ai.storyteller.craft-anything.png" alt="" width="32" height="32"> | **Craft Anything** | See how any software works, then build your own | [GitHub](https://github.com/storytold/craft-anything) | [Website](https://getartcraft.com/apps/craft-anything) |
 | <img src="https://raw.githubusercontent.com/tangency-labs/solidcraft/main/assets/icons/app/linux/exports/hicolor/64x64/apps/io.tangencylabs.solidcraft.png" alt="" width="32" height="32"> | **SolidCraft** | Parametric 3D CAD by Tangency Labs (community app) | [GitHub](https://github.com/tangency-labs/solidcraft) | |
 
-And [**ArtCraft**](https://getartcraft.com/) itself, our AI image and video studio for artists who want real control.
+The ArtCraft team also makes [**ArtCraft**](https://getartcraft.com/) itself, an AI image and video studio. udinCraft is an independent build of some of these apps; it is not an ArtCraft product.
 
 <br>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><img alt="Join the ArtCraft community on Discord" src="https://img.shields.io/badge/Join%20us%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" height="40"></a>
-</p>
-
-<h3 align="center">Come make things with us</h3>
-
-<p align="center">
-  Our Discord is where artists of every kind hang out: people who paint, shoot, draw, cut film,
-  set type, and people still figuring out what they like to make. Share what you're working on,
-  ask for help, tell us what's broken, or tell us what you wish these tools could do.
-  Whatever your medium and however long you've been at it, you're welcome here.
-</p>
-
-<p align="center">
-  <a href="https://discord.gg/artcraft"><b>discord.gg/artcraft</b></a> ·
-  <a href="https://getartcraft.com/">getartcraft.com</a> ·
-  <a href="https://getartcraft.com/apps">The Crafting Apps</a> ·
-  <a href="https://getartcraft.com/apps/pdfcraft">PdfCraft</a>
-</p>
 
 ---
 
 ## License and credits
 
 PdfCraft is dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at your option.
-Copyright (c) 2026 ArtCraft Team and the PdfCraft contributors. Required notices are in [NOTICE](NOTICE).
+Copyright (c) 2026 ArtCraft Team and the PdfCraft contributors. udinCraft changes: Copyright (c) 2026 miqbalf. Required notices are in [NOTICE](NOTICE).
 
 Bundled fonts, icons, images and other assets keep their own open licenses; each one is listed
 with its author, source and license in [ATTRIBUTION.md](ATTRIBUTION.md). Release builds also embed
 the Japanese fonts of [craft-fonts](https://github.com/storytold/craft-fonts/blob/main/ATTRIBUTION.md)
 (SIL Open Font License 1.1).
 
-The ArtCraft name, wordmark and logos in [`docs/brand/`](docs/brand/) are trademarks of the
-ArtCraft Team and are not covered by this license. They may be used only unmodified, and only as
-part of this repository and PdfCraft, under [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
-Forks and modified versions must remove them.
+The udinCraft name, wordmark and mark in [`docs/brand/`](docs/brand/) belong to miqbalf and are not
+covered by this license; their terms are in [`docs/brand/LICENSE-brand.txt`](docs/brand/LICENSE-brand.txt).
+Forks and modified versions must replace them with their own. This repository does not use the
+ArtCraft marks: udinCraft is not an ArtCraft product. It is based on [PdfCraft](https://github.com/storytold/pdfcraft) by the ArtCraft team.
 
 <p align="center">
-  <a href="https://getartcraft.com/"><img alt="ArtCraft" src="docs/brand/artcraft-mark.svg" width="28"></a><br>
-  <sub>Made by the <a href="https://getartcraft.com/">ArtCraft</a> team and community.</sub>
+  <a href="https://github.com/miqbalf/pdfcraft"><img alt="udinCraft" src="docs/brand/udincraft-mark.svg" width="28"></a><br>
+  <sub>udinCraft PdfCraft, based on <a href="https://github.com/storytold/pdfcraft">PdfCraft</a> by the ArtCraft team and community.</sub>
 </p>
 
 The Tools panel sits on the left, or on the right with Preferences ▸ Tools panel side. The rail stays at the right edge and opens one side panel beside it. Drag a panel's inner edge to resize it; widths are remembered. F4 shows or hides the side panel and Shift+F4 the Tools panel (also in the View menu); View ▸ Reset side panels restores the default arrangement.

@@ -691,34 +691,35 @@ pub fn progress_notice(app: &PdfCraftApp, ctx: &egui::Context) -> bool {
     cancel
 }
 
-/// The ArtCraft wordmark (Storyteller's brand, docs/brand/; not open source), sized to `height`.
-pub fn artcraft_logo(ui: &mut egui::Ui, height: f32) -> Response {
+/// The udinCraft wordmark (the owner's brand, docs/brand/; not open source), sized to `height`.
+pub fn udincraft_logo(ui: &mut egui::Ui, height: f32) -> Response {
     let dark = ui.visuals().dark_mode;
     let (uri, bytes): (&str, &'static [u8]) = if dark {
-        ("bytes://artcraft-logo-white.svg", include_bytes!("../../../docs/brand/artcraft-logo-white.svg"))
+        ("bytes://udincraft-logo-white.svg", include_bytes!("../../../docs/brand/udincraft-logo-white.svg"))
     } else {
-        ("bytes://artcraft-logo.svg", include_bytes!("../../../docs/brand/artcraft-logo.svg"))
+        ("bytes://udincraft-logo.svg", include_bytes!("../../../docs/brand/udincraft-logo.svg"))
     };
-    ui.add(egui::Image::from_bytes(uri, bytes).max_height(height).alt_text("ArtCraft"))
+    ui.add(egui::Image::from_bytes(uri, bytes).max_height(height).alt_text("udinCraft"))
 }
 
-/// The ArtCraft mark (brand blue, works on light and dark), `size` points square.
-pub fn artcraft_mark(ui: &mut egui::Ui, size: f32) -> Response {
+/// The udinCraft mark (teal tile, works on light and dark), `size` points square.
+pub fn udincraft_mark(ui: &mut egui::Ui, size: f32) -> Response {
     ui.add(
-        egui::Image::from_bytes("bytes://artcraft-mark.svg", include_bytes!("../../../docs/brand/artcraft-mark.svg"))
+        egui::Image::from_bytes("bytes://udincraft-mark.svg", include_bytes!("../../../docs/brand/udincraft-mark.svg"))
             .fit_to_exact_size(vec2(size, size))
-            .alt_text("ArtCraft"),
+            .alt_text("udinCraft"),
     )
 }
 
-/// Buttons for every community link (`pdfcraft_engine::links`), Discord first and prominent.
+/// Buttons for every community link (`pdfcraft_engine::links`), the upstream Discord first and prominent.
 /// Returns the registry command of the one clicked.
 pub fn community_links(ui: &mut egui::Ui) -> Option<&'static str> {
     let mut clicked = None;
     ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
         for (i, l) in pdfcraft_engine::links::LINKS.iter().enumerate() {
-            let resp = if i == 0 { icon_pill(ui, l.icon, tl!("Join our Discord"), true) } else { icon_pill(ui, l.icon, tl!(l.label), false) };
+            let resp =
+                if i == 0 { icon_pill(ui, l.icon, tl!("Join the ArtCraft Discord"), true) } else { icon_pill(ui, l.icon, tl!(l.label), false) };
             if resp.on_hover_text(l.url).clicked() {
                 clicked = Some(l.command);
             }

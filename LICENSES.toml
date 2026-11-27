@@ -63,7 +63,7 @@ sha256 = "b495047bd93a9b06913511076f504daba17d5bbeb3e0650f3bb53a4220329c57"
 [[document]]
 source = "docs/brand/LICENSE-brand.txt"
 destination = "docs/brand/LICENSE-brand.txt"
-sha256 = "0f33f48e7a96cd359d4e4e5b11424b13cebeb59cc70c77928186695e4173585c"
+sha256 = "b849be7871069d57d0c244bf1b79d8051df530c936ec951cd44677571a34a3d5"
 
 [[document]]
 source = "licenses/CMap-LICENSE.txt"
