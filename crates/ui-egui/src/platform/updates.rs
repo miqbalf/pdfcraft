@@ -116,7 +116,7 @@ impl PdfCraftApp {
         self.updates.startup_check = on;
     }
 
-    /// Replaces the network with `source`: tests, and the udinCraft build at start (`fork_update_source`).
+    /// Replaces the network with `source` (tests).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_update_source(&mut self, source: UpdateSource) {
         self.updates.updater = Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_source(source);
@@ -327,6 +327,16 @@ mod tests {
             html_url: "https://github.com/storytold/pdfcraft/releases/tag/v99.0.0".into(),
             ..Default::default()
         });
+        // craft-update reads on a thread whether this copy can install the release itself, and
+        // the prompt opens once `tick` picks up that answer.
+        let ctx = egui::Context::default();
+        for _ in 0..500 {
+            if app.updates.updater.prompt_open() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            app.updates.updater.tick(&ctx);
+        }
         assert!(app.updates.updater.prompt_open());
         answer_result(&mut app, &egui::Context::default(), CheckResultResponse::RestartToUpdate);
         assert!(!app.updates.open, "the result dialog closes");
