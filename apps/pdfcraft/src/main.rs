@@ -484,7 +484,10 @@ fn app_creator<'a>(
             }
             app.motion.source = Some(motion::source());
         }
-        app.set_startup_update_check(true);
+        // udinCraft: upstream releases would replace this fork, so the check finds none and Help ▸
+        // Check for Updates says why (FORK_UPDATES_OFF), in the language restored above.
+        app.set_update_source(pdfcraft_ui_egui::fork_update_source());
+        app.set_startup_update_check(false);
         // Share: a file in a folder the Nextcloud desktop client syncs opens its sharing.
         app.share_lookup = pdfcraft_ui_egui::craft_share::desktop_route;
         app.printer_source = Some(pdfcraft_ui_egui::system_printers());

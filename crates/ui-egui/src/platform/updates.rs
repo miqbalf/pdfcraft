@@ -9,8 +9,8 @@ use craft_update::{CheckResultDialog, CheckResultResponse};
 
 use crate::PdfCraftApp;
 
-/// Where every PdfCraft release is listed.
-pub const RELEASES_PAGE: &str = "https://github.com/storytold/pdfcraft/releases";
+/// Where every release of this udinCraft build is listed (the fork's, not upstream's).
+pub const RELEASES_PAGE: &str = "https://github.com/miqbalf/pdfcraft/releases";
 
 /// Stands in for the network in tests.
 #[cfg(not(target_arch = "wasm32"))]
@@ -55,7 +55,7 @@ impl Default for Updates {
     fn default() -> Self {
         Self {
             #[cfg(not(target_arch = "wasm32"))]
-            updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")),
+            updater: Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_source(crate::fork_update_source()),
             open: false,
             #[cfg(not(target_arch = "wasm32"))]
             startup_check: false,
@@ -116,7 +116,7 @@ impl PdfCraftApp {
         self.updates.startup_check = on;
     }
 
-    /// Replaces the network with `source` (tests).
+    /// Replaces the network with `source`: tests, and the udinCraft build at start (`fork_update_source`).
     #[cfg(not(target_arch = "wasm32"))]
     pub fn set_update_source(&mut self, source: UpdateSource) {
         self.updates.updater = Updater::new(&crate::UPDATE_APP, env!("CARGO_PKG_VERSION")).with_source(source);
