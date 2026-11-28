@@ -22,10 +22,34 @@ concurrency:
 
 jobs:
   # The shared gate doesn't check where git dependencies come from; release.yml runs the same job.
+  # This fork also pins miqbalf/craft-libs, and the shared check takes one allowed prefix. So the
+  # shared check runs with github.com/ (it still checks Cargo.lock, Cargo config overrides and
+  # `cargo metadata --locked`), and the next step narrows the owners to storytold and miqbalf.
   git-sources:
     if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
-    # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
-    uses: storytold/craft-common-actions/.github/workflows/git-sources.yml@main
+    name: Git dependencies come from storytold or miqbalf
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@1d88384fd173af6ecb012dfd0264a306b711241a # v2.22.4
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Tracks @main so suite-wide CI fixes reach every app without a PR in each repository.
+      - uses: storytold/craft-common-actions/actions/check-git-sources@main
+        with:
+          allowed-prefix: "git+https://github.com/"
+      - name: Git dependencies come from storytold or miqbalf
+        run: |
+          outside=$(grep -E '^source = "git\+' Cargo.lock | grep -vE '^source = "git\+https://github\.com/(storytold|miqbalf)/' | sort -u || true)
+          if [ -n "$outside" ]; then
+            while IFS= read -r line; do echo "::error::git dependency outside storytold and miqbalf: $line"; done <<<"$outside"
+            exit 1
+          fi
+          echo "Git dependencies all come from github.com/storytold or github.com/miqbalf"
 
   gate:
     if: github.event.action != 'labeled' || github.event.label.name == 'full-ci'
